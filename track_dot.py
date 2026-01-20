@@ -14,8 +14,8 @@ pipeline.start(config)
 print("Camera started! Press 'q' to quit")
 
 # Parameters for black dot detection
-MIN_DOT_AREA = 15     # Minimum area in pixels for a dot
-MAX_DOT_AREA = 300    # Small dots only
+MIN_DOT_AREA = 5      # Very relaxed minimum
+MAX_DOT_AREA = 1000   # Very relaxed maximum
 CENTER_CROP_RATIO = 0.6  # Focus on center 60% of frame
 
 # Setup blob detector
@@ -26,21 +26,25 @@ params.filterByArea = True
 params.minArea = MIN_DOT_AREA
 params.maxArea = MAX_DOT_AREA
 
-# Filter by circularity
+# Filter by circularity - VERY RELAXED
 params.filterByCircularity = True
-params.minCircularity = 0.3
+params.minCircularity = 0.1
 
-# Filter by convexity
+# Filter by convexity - VERY RELAXED
 params.filterByConvexity = True
-params.minConvexity = 0.5
+params.minConvexity = 0.1
 
 # Filter by color (looking for dark blobs)
-params.filterByColor = True
-params.blobColor = 0  # 0 for dark blobs, 255 for light blobs
+params.filterByColor = False  # Disabled - causes issues sometimes
 
-# Filter by inertia (shape)
+# Filter by inertia (shape) - VERY RELAXED
 params.filterByInertia = True
-params.minInertiaRatio = 0.3
+params.minInertiaRatio = 0.01
+
+# Threshold steps
+params.minThreshold = 10
+params.maxThreshold = 200
+params.thresholdStep = 10
 
 detector = cv2.SimpleBlobDetector_create(params)
 
@@ -75,6 +79,16 @@ try:
         # Detect blobs
         keypoints = detector.detect(inverted)
         
+        # Also try on the original gray image (not inverted)
+        keypoints_gray = detector.detect(gray)
+        
+        # Use whichever found more blobs
+        if len(keypoints_gray) > len(keypoints):
+            keypoints = keypoints_gray
+            detection_method = "gray"
+        else:
+            detection_method = "inverted"
+        
         # Display frame for visualization
         display_image = color_image.copy()
         
@@ -83,8 +97,18 @@ try:
         cv2.putText(display_image, "Search Area", (x1 + 10, y1 + 30),
                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
         
-        cv2.putText(display_image, f"Blobs found: {len(keypoints)}", (10, 60),
+        cv2.putText(display_image, f"Blobs found: {len(keypoints)} ({detection_method})", (10, 60),
                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1)
+        
+        # Draw ALL detected blobs for debugging
+        for i, kp in enumerate(keypoints):
+            cx_temp = int(kp.pt[0]) + x1
+            cy_temp = int(kp.pt[1]) + y1
+            radius_temp = int(kp.size / 2)
+            # Draw all blobs in yellow
+            cv2.circle(display_image, (cx_temp, cy_temp), radius_temp, (0, 255, 255), 1)
+            cv2.putText(display_image, str(i), (cx_temp + 5, cy_temp + 5),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
         
         # Draw detected dots
         if len(keypoints) > 0:
