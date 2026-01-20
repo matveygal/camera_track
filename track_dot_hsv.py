@@ -22,10 +22,12 @@ UPPER_BOUND = np.array([179, 255, 89])
 MIN_DOT_AREA = 10
 MAX_DOT_AREA = 500
 MIN_CIRCULARITY = 0.4  # Dots are circular
-FRAME_HISTORY = 5  # Frames to average for temporal consistency
+FRAME_HISTORY = 10  # Frames to average for temporal consistency
+MIN_STABLE_FRAMES = 7  # Dot must appear in at least this many recent frames
 
-# Track history of detected positions
-position_history = deque(maxlen=FRAME_HISTORY)
+# Track history of ALL detected candidates per frame
+candidates_history = deque(maxlen=FRAME_HISTORY)
+tracked_dot = None  # Currently tracked dot position
 
 try:
     while True:
@@ -76,55 +78,56 @@ try:
                 if M["m00"] != 0:
                     cx = int(M["m10"] / M["m00"])
                     cy = int(M["m01"] / M["m00"])
-                    candidates.append((c, cx, cy, area, circularity))
+                    candidates.append((cx, cy, area, circularity))
         
-        # Track the most stable dot using temporal consistency
+        # Add current frame candidates to history
+        candidates_history.append(candidates)
+        
+        # Find the most stable dot - appears consistently in the same location
         best_dot = None
-        if len(candidates) > 0:
-            # If we have history, prefer dots close to previous positions
-            if len(position_history) > 0:
-                avg_prev_x = np.mean([p[0] for p in position_history])
-                avg_prev_y = np.mean([p[1] for p in position_history])
+        max_stability = 0
+        
+        if len(candidates_history) >= MIN_STABLE_FRAMES:
+            # For each current candidate, check how stable it is across history
+            for cx, cy, area, circ in candidates:
+                # Count how many frames had a dot near this position
+                stable_count = 0
+                for past_candidates in candidates_history:
+                    for past_cx, past_cy, _, _ in past_candidates:
+                        # Check if past candidate is close to current position
+                        dist = np.sqrt((cx - past_cx)**2 + (cy - past_cy)**2)
+                        if dist < 20:  # Within 20 pixels = same dot
+                            stable_count += 1
+                            break
                 
-                # Find candidate closest to previous average position
-                min_dist = float('inf')
-                for candidate in candidates:
-                    _, cx, cy, _, _ = candidate
-                    dist = np.sqrt((cx - avg_prev_x)**2 + (cy - avg_prev_y)**2)
-                    if dist < min_dist:
-                        min_dist = dist
-                        best_dot = candidate
+                # This dot's stability score
+                stability = stable_count / len(candidates_history)
                 
-                # Only accept if it's reasonably close (not a jump to random noise)
-                if min_dist > 100:  # Too far from previous position
-                    best_dot = None
-            else:
-                # No history yet, take the most circular one
-                best_dot = max(candidates, key=lambda x: x[4])  # Sort by circularity
+                if stability > max_stability:
+                    max_stability = stability
+                    best_dot = (cx, cy, area, circ, stable_count)
+            
+            # Only accept if it appears in most frames (persistent, not flickering)
+            if best_dot and best_dot[4] < MIN_STABLE_FRAMES:
+                best_dot = None
         
         # Draw result
         if best_dot is not None:
-            c, cx, cy, area, circularity = best_dot
-            
-            # Add to history
-            position_history.append((cx, cy))
-            
-            # Compute the minimum enclosing circle
-            ((x, y), radius) = cv2.minEnclosingCircle(c)
+            cx, cy, area, circularity, stable_count = best_dot
             
             # Draw the circle and centroid
-            cv2.circle(frame, (int(x), int(y)), int(radius), (0, 255, 255), 2)
+            cv2.circle(frame, (cx, cy), 15, (0, 255, 255), 2)
             cv2.circle(frame, (cx, cy), 5, (0, 0, 255), -1)
             
             # Display info
             cv2.putText(frame, f"Dot: ({cx}, {cy})", 
-                       (cx + 10, cy - 10),
+                       (cx + 20, cy - 10),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-            cv2.putText(frame, f"Circ: {circularity:.2f}", 
-                       (cx + 10, cy + 20),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1)
+            cv2.putText(frame, f"Stable: {stable_count}/{len(candidates_history)}", 
+                       (cx + 20, cy + 20),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
         else:
-            cv2.putText(frame, "No dot detected", (10, 30),
+            cv2.putText(frame, "Waiting for stable dot...", (10, 30),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
         
         # Show candidate count
