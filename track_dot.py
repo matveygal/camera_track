@@ -131,8 +131,10 @@ try:
         cv2.putText(display_image, "Search Area", (x1 + 10, y1 + 30),
                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
         
-        # Show the mask for debugging
-        consistent_black_colored = cv2.cvtColor(consistent_black, cv2.COLOR_GRAY2BGR)
+        # Show the mask for debugging - pad cropped mask to full size
+        full_consistent_black = np.zeros((h, w), dtype=np.uint8)
+        full_consistent_black[y1:y2, x1:x2] = consistent_black
+        consistent_black_colored = cv2.cvtColor(full_consistent_black, cv2.COLOR_GRAY2BGR)
         combined = np.hstack((display_image, consistent_black_colored))
         
         cv2.imshow('Dot Tracker | Black Mask (Press Q to quit)', combined)
