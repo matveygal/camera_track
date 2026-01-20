@@ -64,10 +64,18 @@ try:
         # Find contours
         contours, _ = cv2.findContours(mask.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         
-        # Only proceed if at least one contour was found
-        if len(contours) > 0:
-            # Find the largest contour
-            c = max(contours, key=cv2.contourArea)
+        # Filter contours - look for small circular dots, not giant blobs
+        dot_contours = []
+        for c in contours:
+            area = cv2.contourArea(c)
+            # Only keep small blobs (the dot, not the entire frame)
+            if 10 < area < 500:  # Adjust these if needed
+                dot_contours.append(c)
+        
+        # Only proceed if we found candidate dots
+        if len(dot_contours) > 0:
+            # Find the largest of the small contours (the dot)
+            c = max(dot_contours, key=cv2.contourArea)
             
             # Compute the minimum enclosing circle and centroid
             ((x, y), radius) = cv2.minEnclosingCircle(c)
