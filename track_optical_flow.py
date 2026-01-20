@@ -160,15 +160,11 @@ def main():
                             # Keep last good point visible
                             x, y = last_good_point[0][0]
                             cv2.circle(frame, (int(x), int(y)), 5, (0, 165, 255), -1)
-                    last_good_point = point.copy()
-                    lost_frames = 0
-                    print("Point captured! Tracking started.")
-            elif key == ord('r'):
-                # Reset tracking
-                point = None
-                old_gray = None
-                last_good_point = None
-                lost_frames = 0
+                            cv2.circle(frame, (int(x), int(y)), 20, (0, 165, 255), 2)
+                            cv2.putText(frame, f"SEARCHING... ({lost_frames}/{max_lost_frames})", 
+                                       (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 
+                                       0.6, (0, 165, 255), 2)
+                    else:
                         # Give up after max_lost_frames
                         cv2.putText(frame, "TRACKING LOST - Press 'c' to recapture", 
                                    (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 
@@ -195,11 +191,15 @@ def main():
                 point = select_dot_point(frame)
                 if point is not None:
                     old_gray = gray.copy()
+                    last_good_point = point.copy()
+                    lost_frames = 0
                     print("Point captured! Tracking started.")
             elif key == ord('r'):
                 # Reset tracking
                 point = None
                 old_gray = None
+                last_good_point = None
+                lost_frames = 0
                 print("Tracking reset.")
     
     finally:
