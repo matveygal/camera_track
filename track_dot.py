@@ -14,7 +14,9 @@ pipeline.start(config)
 print("Camera started! Press 'q' to quit")
 
 # Parameters for black dot detection
-BLACK_THRESHOLD = 80  # Pixels darker than this are considered black
+BLACK_THRESHOLD_B = 60  # Blue channel threshold
+BLACK_THRESHOLD_G = 60  # Green channel threshold  
+BLACK_THRESHOLD_R = 60  # Red channel threshold (must be low to exclude red heart)
 MIN_DOT_AREA = 10     # Minimum area in pixels for a dot
 MAX_DOT_AREA = 800    # Maximum area to exclude large black regions
 MIN_CIRCULARITY = 0.3 # How circular the blob should be (0-1, 1 = perfect circle)
@@ -34,11 +36,13 @@ try:
         # Convert to numpy array
         color_image = np.asanyarray(color_frame.get_data())
         
-        # Convert to grayscale
-        gray = cv2.cvtColor(color_image, cv2.COLOR_BGR2GRAY)
+        # Split into BGR channels
+        b, g, r = cv2.split(color_image)
         
-        # Threshold to find black pixels
-        _, black_mask = cv2.threshold(gray, BLACK_THRESHOLD, 255, cv2.THRESH_BINARY_INV)
+        # Black pixels must be dark in ALL channels (this excludes red/colored areas)
+        black_mask = ((b < BLACK_THRESHOLD_B) & 
+                     (g < BLACK_THRESHOLD_G) & 
+                     (r < BLACK_THRESHOLD_R)).astype(np.uint8) * 255
         
         # Add to history
         black_history.append(black_mask.astype(np.float32) / 255.0)
