@@ -35,8 +35,12 @@ print(f"Depth scale: {depth_scale}")
 
 # Template and tracking state
 template = None
+template_gray_normalized = None  # Store normalized template
 template_w, template_h = 0, 0
 tracking = False
+
+# CLAHE (Contrast Limited Adaptive Histogram Equalization) for lighting normalization
+clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
 
 # Data storage
 timestamps = []
@@ -61,7 +65,7 @@ ax.grid(True)
 
 def select_template():
     """Capture a single frame and let user select the dot"""
-    global template, template_w, template_h, tracking, start_time
+    global template, template_gray_normalized, template_w, template_h, tracking, start_time
     
     frames = pipeline.wait_for_frames()
     aligned_frames = align.process(frames)
@@ -80,11 +84,17 @@ def select_template():
     
     if w > 0 and h > 0:
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        
+        # Apply CLAHE to normalize lighting on template
+        gray_normalized = clahe.apply(gray)
+        
         template = gray[int(y):int(y+h), int(x):int(x+w)]
+        template_gray_normalized = gray_normalized[int(y):int(y+h), int(x):int(x+w)]
         template_w, template_h = w, h
         tracking = True
         start_time = datetime.now()
         print(f"✓ Template captured! Tracking started at {start_time.strftime('%H:%M:%S')}")
+        print(f"  Using CLAHE lighting normalization for robust tracking")
         return True
     else:
         print("✗ No template selected")
@@ -141,9 +151,12 @@ try:
         color_image = np.asanyarray(color_frame.get_data())
         gray = cv2.cvtColor(color_image, cv2.COLOR_BGR2GRAY)
         
-        # Template matching
-        if tracking and template is not None:
-            result = cv2.matchTemplate(gray, template, cv2.TM_CCOEFF_NORMED)
+        # Apply CLAHE to normalize lighting (same as template)
+        gray_normalized = clahe.apply(gray)
+        
+        # Template matching with lighting-normalized images
+        if tracking and template_gray_normalized is not None:
+            result = cv2.matchTemplate(gray_normalized, template_gray_normalized, cv2.TM_CCOEFF_NORMED)
             min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(result)
             
             if max_val > 0.6:  # Good match
