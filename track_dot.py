@@ -14,10 +14,10 @@ pipeline.start(config)
 print("Camera started! Press 'q' to quit")
 
 # Parameters for black dot detection
-BLACK_THRESHOLD = 40  # Very strict - only truly black pixels
+BLACK_THRESHOLD = 25  # Very very strict - only the darkest pixels
 MIN_DOT_AREA = 15     # Minimum area in pixels for a dot
 MAX_DOT_AREA = 300    # Small dots only
-MIN_CIRCULARITY = 0.5 # Must be reasonably circular
+MIN_CIRCULARITY = 0.4 # Must be reasonably circular
 CENTER_CROP_RATIO = 0.6  # Focus on center 60% of frame
 
 # Temporal filtering
