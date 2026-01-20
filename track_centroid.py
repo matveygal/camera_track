@@ -60,6 +60,14 @@ try:
         # Detect blobs
         keypoints = detector.detect(inverted)
         
+        # Draw ALL detected blobs for debugging (in yellow)
+        for i, kp in enumerate(keypoints):
+            x, y = int(kp.pt[0]), int(kp.pt[1])
+            radius = int(kp.size / 2)
+            cv2.circle(frame, (x, y), radius, (0, 255, 255), 1)
+            cv2.putText(frame, str(i), (x + 5, y + 5),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
+        
         # Find the best match for our tracked dot
         current_dot = None
         
@@ -97,10 +105,10 @@ try:
         if tracked_dot is not None:
             cx, cy = tracked_dot
             
-            # Draw circle and crosshair
-            cv2.circle(frame, (cx, cy), 15, (0, 255, 255), 2)
+            # Draw circle and crosshair (in GREEN for tracked dot)
+            cv2.circle(frame, (cx, cy), 20, (0, 255, 0), 3)
             cv2.drawMarker(frame, (cx, cy), (0, 255, 0), 
-                          cv2.MARKER_CROSS, 20, 2)
+                          cv2.MARKER_CROSS, 25, 3)
             
             # Display position
             cv2.putText(frame, f"Dot: ({cx}, {cy})", 
