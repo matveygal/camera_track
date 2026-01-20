@@ -1,62 +1,65 @@
-import cv2
+import pyrealsense2 as rs
 import numpy as np
+import cv2
 
-# Try to find RealSense cameras
-print("Scanning for cameras...")
-available_cameras = []
-for i in range(10):
-    cap = cv2.VideoCapture(i)
-    if cap.isOpened():
-        available_cameras.append(i)
-        cap.release()
+print("Initializing RealSense camera...")
 
-print(f"Found cameras at indices: {available_cameras}")
-print("\nTesting all cameras to identify them...")
+# Create a context object to manage devices
+ctx = rs.context()
+devices = ctx.query_devices()
 
-# Open all available cameras to see what they are
-caps = []
-for idx in available_cameras:
-    cap = cv2.VideoCapture(idx)
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-    caps.append((idx, cap))
+if len(devices) == 0:
+    print("No RealSense devices found!")
+    exit(1)
 
-print(f"Opening {len(caps)} cameras")
-print("Press 'q' to quit, or press 1/2/3 to select which pair to use for stereo")
+print(f"Found {len(devices)} RealSense device(s)")
+for i, dev in enumerate(devices):
+    print(f"Device {i}: {dev.get_info(rs.camera_info.name)}")
+    print(f"  Serial: {dev.get_info(rs.camera_info.serial_number)}")
+
+# Configure streams
+pipeline = rs.pipeline()
+config = rs.config()
+
+# Enable color and depth streams
+config.enable_stream(rs.stream.depth, 640, 480, rs.format.z16, 30)
+config.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)
+
+# Start streaming
+print("\nStarting streams...")
+pipeline.start(config)
+print("Streams started! Press 'q' to quit")
 
 try:
     while True:
-        frames = []
-        for idx, cap in caps:
-            ret, frame = cap.read()
-            if ret:
-                # Resize to standard size
-                frame_resized = cv2.resize(frame, (640, 480))
-                # Add label
-                cv2.putText(frame_resized, f'Camera {idx}', (10, 30), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-                frames.append(frame_resized)
-            else:
-                frames.append(np.zeros((480, 640, 3), dtype=np.uint8))
+        # Wait for frames
+        frames = pipeline.wait_for_frames()
+        depth_frame = frames.get_depth_frame()
+        color_frame = frames.get_color_frame()
         
-        # Display all cameras
-        if len(frames) >= 3:
-            row1 = np.hstack(frames[:2])
-            row2 = np.hstack([frames[2], np.zeros((480, 640, 3), dtype=np.uint8)])
-            combined = np.vstack([row1, row2])
-        elif len(frames) == 2:
-            combined = np.hstack(frames)
-        else:
-            combined = frames[0] if frames else np.zeros((480, 640, 3), dtype=np.uint8)
+        if not depth_frame or not color_frame:
+            continue
         
-        cv2.imshow('All Cameras - Identify your RealSense cameras', combined)
+        # Convert to numpy arrays
+        depth_image = np.asanyarray(depth_frame.get_data())
+        color_image = np.asanyarray(color_frame.get_data())
         
-        key = cv2.waitKey(1) & 0xFF
-        if key == ord('q'):
+        # Colorize depth for visualization
+        depth_colormap = cv2.applyColorMap(
+            cv2.convertScaleAbs(depth_image, alpha=0.03), 
+            cv2.COLORMAP_JET
+        )
+        
+        # Stack images side by side
+        combined = np.hstack((color_image, depth_colormap))
+        
+        # Display streams
+        cv2.imshow('RealSense: Color | Depth (Press Q to quit)', combined)
+        
+        if cv2.waitKey(1) & 0xFF == ord('q'):
             break
             
 finally:
-    for idx, cap in caps:
-        cap.release()
+    pipeline.stop()
     cv2.destroyAllWindows()
-    print("Cameras released")
+    print("Camera stopped")
