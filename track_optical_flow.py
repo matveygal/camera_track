@@ -42,6 +42,40 @@ def select_dot_point(frame):
     print(f"Initial tracking point: ({point[0][0][0]:.1f}, {point[0][0][1]:.1f})")
     return point
 
+def try_reacquire_point(gray, last_point, search_radius=30):
+    """Try to find a good feature point near the last known position"""
+    x, y = last_point[0][0]
+    x, y = int(x), int(y)
+    
+    # Define search region around last known position
+    x1 = max(0, x - search_radius)
+    y1 = max(0, y - search_radius)
+    x2 = min(gray.shape[1], x + search_radius)
+    y2 = min(gray.shape[0], y + search_radius)
+    
+    if x2 <= x1 or y2 <= y1:
+        return None
+    
+    roi = gray[y1:y2, x1:x2]
+    
+    feature_params = dict(
+        maxCorners=1,
+        qualityLevel=0.01,
+        minDistance=5,
+        blockSize=7
+    )
+    
+    corners = cv2.goodFeaturesToTrack(roi, **feature_params)
+    
+    if corners is not None:
+        # Convert to full frame coordinates
+        point = corners.copy()
+        point[0][0][0] += x1
+        point[0][0][1] += y1
+        return point
+    
+    return None
+
 def main():
     # Configure RealSense
     pipeline = rs.pipeline()
@@ -60,6 +94,9 @@ def main():
     
     point = None
     old_gray = None
+    last_good_point = None
+    lost_frames = 0
+    max_lost_frames = 10  # Try to recover for up to 10 frames
     
     print("\nControls:")
     print("  c - Capture/recapture dot point")
@@ -85,6 +122,8 @@ def main():
                 
                 if status[0][0] == 1:  # Successfully tracked
                     point = new_point
+                    last_good_point = point.copy()
+                    lost_frames = 0
                     x, y = point[0][0]
                     
                     # Draw tracking point
@@ -99,11 +138,44 @@ def main():
                                (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 
                                0.6, (0, 255, 0), 2)
                 else:
-                    # Lost tracking
-                    cv2.putText(frame, "TRACKING LOST - Press 'c' to recapture", 
-                               (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 
-                               0.6, (0, 0, 255), 2)
-                    point = None
+                    # Lost tracking - try to recover
+                    lost_frames += 1
+                    
+                    if last_good_point is not None and lost_frames <= max_lost_frames:
+                        # Try to reacquire near last known position
+                        recovered_point = try_reacquire_point(gray, last_good_point)
+                        
+                        if recovered_point is not None:
+                            point = recovered_point
+                            lost_frames = 0
+                            x, y = point[0][0]
+                            
+                            # Draw in yellow to indicate recovery
+                            cv2.circle(frame, (int(x), int(y)), 5, (0, 255, 255), -1)
+                            cv2.circle(frame, (int(x), int(y)), 20, (0, 255, 255), 2)
+                            cv2.putText(frame, f"RECOVERED - X: {x:.1f}, Y: {y:.1f}", 
+                                       (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 
+                                       0.6, (0, 255, 255), 2)
+                        else:
+                            # Keep last good point visible
+                            x, y = last_good_point[0][0]
+                            cv2.circle(frame, (int(x), int(y)), 5, (0, 165, 255), -1)
+                    last_good_point = point.copy()
+                    lost_frames = 0
+                    print("Point captured! Tracking started.")
+            elif key == ord('r'):
+                # Reset tracking
+                point = None
+                old_gray = None
+                last_good_point = None
+                lost_frames = 0
+                        # Give up after max_lost_frames
+                        cv2.putText(frame, "TRACKING LOST - Press 'c' to recapture", 
+                                   (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 
+                                   0.6, (0, 0, 255), 2)
+                        point = None
+                        last_good_point = None
+                        lost_frames = 0
             else:
                 # No tracking active
                 cv2.putText(frame, "Press 'c' to capture dot", 
