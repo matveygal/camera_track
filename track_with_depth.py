@@ -4,6 +4,7 @@ import cv2
 import matplotlib.pyplot as plt
 from datetime import datetime
 import csv
+from collections import deque
 
 print("=== DOT TRACKER WITH DEPTH MEASUREMENT ===")
 print("Instructions:")
@@ -43,6 +44,10 @@ distances = []
 positions_x = []
 positions_y = []
 start_time = None
+
+# Rolling median filter settings
+FILTER_WINDOW_SIZE = 10  # Number of frames to use for median filtering
+distance_buffer = deque(maxlen=FILTER_WINDOW_SIZE)
 
 # Plot settings
 show_plot = True
@@ -160,10 +165,16 @@ try:
                 if depth_value > 0:
                     distance_mm = depth_value * depth_scale * 1000
                     
-                    # Record data
+                    # Add to rolling buffer
+                    distance_buffer.append(distance_mm)
+                    
+                    # Apply median filter to smooth out spikes
+                    filtered_distance = np.median(list(distance_buffer))
+                    
+                    # Record data (using filtered distance)
                     elapsed_time = (datetime.now() - start_time).total_seconds()
                     timestamps.append(elapsed_time)
-                    distances.append(distance_mm)
+                    distances.append(filtered_distance)
                     positions_x.append(cx)
                     positions_y.append(cy)
                     
@@ -178,8 +189,10 @@ try:
                                   cv2.MARKER_CROSS, 20, 2)
                     
                     # Display info
-                    cv2.putText(color_image, f"Distance: {distance_mm:.1f} mm", 
+                    cv2.putText(color_image, f"Distance: {filtered_distance:.1f} mm (filtered)", 
                                (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                    cv2.putText(color_image, f"Raw: {distance_mm:.1f} mm", 
+                               (10, 150), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (100, 100, 100), 1)
                     cv2.putText(color_image, f"Position: ({cx}, {cy})", 
                                (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
                     cv2.putText(color_image, f"Samples: {len(timestamps)}", 
