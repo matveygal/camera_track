@@ -14,10 +14,14 @@ pipeline.start(config)
 print("Camera started! Press 'q' to quit")
 
 # Parameters for black dot detection
-BLACK_THRESHOLD = 80  # Pixels darker than this are considered black (increased to catch dark gray)
+BLACK_THRESHOLD = 80  # Pixels darker than this are considered black
 MIN_DOT_AREA = 10     # Minimum area in pixels for a dot
 MAX_DOT_AREA = 800    # Maximum area to exclude large black regions
 MIN_CIRCULARITY = 0.3 # How circular the blob should be (0-1, 1 = perfect circle)
+
+# Temporal filtering
+FRAME_HISTORY = 5  # Number of frames to average
+black_history = []  # Store history of black masks
 
 try:
     while True:
@@ -36,8 +40,22 @@ try:
         # Threshold to find black pixels
         _, black_mask = cv2.threshold(gray, BLACK_THRESHOLD, 255, cv2.THRESH_BINARY_INV)
         
+        # Add to history
+        black_history.append(black_mask.astype(np.float32) / 255.0)
+        if len(black_history) > FRAME_HISTORY:
+            black_history.pop(0)
+        
+        # Average across frames - only pixels that are consistently black will remain
+        if len(black_history) >= FRAME_HISTORY:
+            avg_black = np.mean(black_history, axis=0)
+            # Pixels must be black in at least 80% of frames
+            consistent_black = (avg_black > 0.8).astype(np.uint8) * 255
+        else:
+            # Not enough frames yet, use current frame
+            consistent_black = black_mask
+        
         # Find contours
-        contours, _ = cv2.findContours(black_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        contours, _ = cv2.findContours(consistent_black, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         
         # Display frame for visualization
         display_image = color_image.copy()
@@ -96,8 +114,8 @@ try:
                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
         
         # Show the mask for debugging
-        black_mask_colored = cv2.cvtColor(black_mask, cv2.COLOR_GRAY2BGR)
-        combined = np.hstack((display_image, black_mask_colored))
+        consistent_black_colored = cv2.cvtColor(consistent_black, cv2.COLOR_GRAY2BGR)
+        combined = np.hstack((display_image, consistent_black_colored))
         
         cv2.imshow('Dot Tracker | Black Mask (Press Q to quit)', combined)
         
