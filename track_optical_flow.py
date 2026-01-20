@@ -95,8 +95,10 @@ def main():
     point = None
     old_gray = None
     last_good_point = None
+    initial_point = None  # Where the dot was first captured
     lost_frames = 0
     max_lost_frames = 10  # Try to recover for up to 10 frames
+    max_drift = 20  # Maximum allowed drift from initial position in pixels
     
     print("\nControls:")
     print("  c - Capture/recapture dot point")
@@ -121,10 +123,24 @@ def main():
                 )
                 
                 if status[0][0] == 1:  # Successfully tracked
-                    point = new_point
-                    last_good_point = point.copy()
-                    lost_frames = 0
-                    x, y = point[0][0]
+                    # Check if point has drifted too far from initial position
+                    x, y = new_point[0][0]
+                    init_x, init_y = initial_point[0][0]
+                    drift = np.sqrt((x - init_x)**2 + (y - init_y)**2)
+                    
+                    if drift > max_drift:
+                        # Reject - drifted too far, probably jumped to ring
+                        lost_frames += 1
+                        cv2.putText(frame, f"DRIFT DETECTED ({drift:.1f}px) - Rejecting", 
+                                   (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 
+                                   0.6, (0, 140, 255), 2)
+                        # Try to recover from initial position
+                        point = initial_point.copy()
+                    else:
+                        # Accept the new point
+                        point = new_point
+                        last_good_point = point.copy()
+                        lost_frames = 0
                     
                     # Draw tracking point
                     cv2.circle(frame, (int(x), int(y)), 5, (0, 255, 0), -1)
@@ -146,16 +162,30 @@ def main():
                         recovered_point = try_reacquire_point(gray, last_good_point)
                         
                         if recovered_point is not None:
-                            point = recovered_point
-                            lost_frames = 0
-                            x, y = point[0][0]
+                            # Validate recovered point isn't too far from initial
+                            rec_x, rec_y = recovered_point[0][0]
+                            init_x, init_y = initial_point[0][0]
+                            drift = np.sqrt((rec_x - init_x)**2 + (rec_y - init_y)**2)
                             
-                            # Draw in yellow to indicate recovery
-                            cv2.circle(frame, (int(x), int(y)), 5, (0, 255, 255), -1)
-                            cv2.circle(frame, (int(x), int(y)), 20, (0, 255, 255), 2)
-                            cv2.putText(frame, f"RECOVERED - X: {x:.1f}, Y: {y:.1f}", 
-                                       (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 
-                                       0.6, (0, 255, 255), 2)
+                            if drift <= max_drift:
+                                point = recovered_point
+                                lost_frames = 0
+                                x, y = point[0][0]
+                                
+                                # Draw in yellow to indicate recovery
+                                cv2.circle(frame, (int(x), int(y)), 5, (0, 255, 255), -1)
+                                cv2.circle(frame, (int(x), int(y)), 20, (0, 255, 255), 2)
+                                cv2.putText(frame, f"RECOVERED - X: {x:.1f}, Y: {y:.1f}", 
+                                           (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 
+                                           0.6, (0, 255, 255), 2)
+                            else:
+                                # Recovery found something too far away (probably ring)
+                                x, y = initial_point[0][0]
+                                cv2.circle(frame, (int(x), int(y)), 5, (0, 165, 255), -1)
+                                cv2.circle(frame, (int(x), int(y)), 20, (0, 165, 255), 2)
+                                cv2.putText(frame, f"SEARCHING... (recovery too far: {drift:.1f}px)", 
+                                           (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 
+                                           0.6, (0, 165, 255), 2)
                         else:
                             # Keep last good point visible
                             x, y = last_good_point[0][0]
@@ -191,6 +221,7 @@ def main():
                 point = select_dot_point(frame)
                 if point is not None:
                     old_gray = gray.copy()
+                    initial_point = point.copy()  # Save initial position
                     last_good_point = point.copy()
                     lost_frames = 0
                     print("Point captured! Tracking started.")
@@ -198,6 +229,7 @@ def main():
                 # Reset tracking
                 point = None
                 old_gray = None
+                initial_point = None
                 last_good_point = None
                 lost_frames = 0
                 print("Tracking reset.")
