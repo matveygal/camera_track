@@ -14,10 +14,10 @@ pipeline.start(config)
 print("Camera started! Press 'q' to quit")
 
 # Parameters for black dot detection
-BLACK_THRESHOLD = 50  # Pixels darker than this are considered black
-MIN_DOT_AREA = 20     # Minimum area in pixels for a dot
-MAX_DOT_AREA = 500    # Maximum area to exclude large black regions
-MIN_CIRCULARITY = 0.5 # How circular the blob should be (0-1, 1 = perfect circle)
+BLACK_THRESHOLD = 80  # Pixels darker than this are considered black (increased to catch dark gray)
+MIN_DOT_AREA = 10     # Minimum area in pixels for a dot
+MAX_DOT_AREA = 800    # Maximum area to exclude large black regions
+MIN_CIRCULARITY = 0.3 # How circular the blob should be (0-1, 1 = perfect circle)
 
 try:
     while True:
@@ -46,6 +46,9 @@ try:
         best_dot = None
         best_circularity = 0
         
+        # Debug: count candidates
+        candidates = []
+        
         for contour in contours:
             area = cv2.contourArea(contour)
             
@@ -59,10 +62,16 @@ try:
                 continue
             circularity = 4 * np.pi * area / (perimeter * perimeter)
             
+            candidates.append((area, circularity))
+            
             # Keep the most circular dot within size range
             if circularity > MIN_CIRCULARITY and circularity > best_circularity:
                 best_circularity = circularity
                 best_dot = contour
+        
+        # Debug info
+        cv2.putText(display_image, f"Candidates: {len(candidates)}", (10, 60),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1)
         
         # Draw the detected dot
         if best_dot is not None:
