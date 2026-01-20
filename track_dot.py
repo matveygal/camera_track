@@ -14,12 +14,11 @@ pipeline.start(config)
 print("Camera started! Press 'q' to quit")
 
 # Parameters for black dot detection
-BLACK_THRESHOLD_B = 60  # Blue channel threshold
-BLACK_THRESHOLD_G = 60  # Green channel threshold  
-BLACK_THRESHOLD_R = 60  # Red channel threshold (must be low to exclude red heart)
-MIN_DOT_AREA = 10     # Minimum area in pixels for a dot
-MAX_DOT_AREA = 800    # Maximum area to exclude large black regions
-MIN_CIRCULARITY = 0.3 # How circular the blob should be (0-1, 1 = perfect circle)
+BLACK_THRESHOLD = 40  # Very strict - only truly black pixels
+MIN_DOT_AREA = 15     # Minimum area in pixels for a dot
+MAX_DOT_AREA = 300    # Small dots only
+MIN_CIRCULARITY = 0.5 # Must be reasonably circular
+CENTER_CROP_RATIO = 0.6  # Focus on center 60% of frame
 
 # Temporal filtering
 FRAME_HISTORY = 5  # Number of frames to average
@@ -36,13 +35,22 @@ try:
         # Convert to numpy array
         color_image = np.asanyarray(color_frame.get_data())
         
-        # Split into BGR channels
-        b, g, r = cv2.split(color_image)
+        # Crop to center region
+        h, w = color_image.shape[:2]
+        crop_h = int(h * CENTER_CROP_RATIO)
+        crop_w = int(w * CENTER_CROP_RATIO)
+        y1 = (h - crop_h) // 2
+        x1 = (w - crop_w) // 2
+        y2 = y1 + crop_h
+        x2 = x1 + crop_w
         
-        # Black pixels must be dark in ALL channels (this excludes red/colored areas)
-        black_mask = ((b < BLACK_THRESHOLD_B) & 
-                     (g < BLACK_THRESHOLD_G) & 
-                     (r < BLACK_THRESHOLD_R)).astype(np.uint8) * 255
+        center_crop = color_image[y1:y2, x1:x2]
+        
+        # Convert to grayscale
+        gray = cv2.cvtColor(center_crop, cv2.COLOR_BGR2GRAY)
+        
+        # Very strict threshold - only truly black pixels
+        _, black_mask = cv2.threshold(gray, BLACK_THRESHOLD, 255, cv2.THRESH_BINARY_INV)
         
         # Add to history
         black_history.append(black_mask.astype(np.float32) / 255.0)
@@ -97,18 +105,19 @@ try:
         
         # Draw the detected dot
         if best_dot is not None:
-            # Get the center
+            # Get the center (adjust for crop offset)
             M = cv2.moments(best_dot)
             if M["m00"] != 0:
-                cx = int(M["m10"] / M["m00"])
-                cy = int(M["m01"] / M["m00"])
+                cx = int(M["m10"] / M["m00"]) + x1
+                cy = int(M["m01"] / M["m00"]) + y1
                 
                 # Draw crosshair on the dot
                 cv2.drawMarker(display_image, (cx, cy), (0, 255, 0), 
                              cv2.MARKER_CROSS, 20, 2)
                 
-                # Draw contour
-                cv2.drawContours(display_image, [best_dot], -1, (0, 255, 0), 2)
+                # Draw contour (adjust for crop offset)
+                adjusted_contour = best_dot + np.array([x1, y1])
+                cv2.drawContours(display_image, [adjusted_contour], -1, (0, 255, 0), 2)
                 
                 # Display position
                 cv2.putText(display_image, f"Dot: ({cx}, {cy})", (cx + 10, cy - 10),
@@ -116,6 +125,11 @@ try:
         else:
             cv2.putText(display_image, "No dot detected", (10, 30),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+        
+        # Draw crop region for reference
+        cv2.rectangle(display_image, (x1, y1), (x2, y2), (255, 255, 0), 2)
+        cv2.putText(display_image, "Search Area", (x1 + 10, y1 + 30),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
         
         # Show the mask for debugging
         consistent_black_colored = cv2.cvtColor(consistent_black, cv2.COLOR_GRAY2BGR)
