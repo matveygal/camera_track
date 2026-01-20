@@ -22,8 +22,8 @@ UPPER_BOUND = np.array([179, 255, 89])
 MIN_DOT_AREA = 10
 MAX_DOT_AREA = 500
 MIN_CIRCULARITY = 0.4  # Dots are circular
-FRAME_HISTORY = 10  # Frames to average for temporal consistency
-MIN_STABLE_FRAMES = 7  # Dot must appear in at least this many recent frames
+FRAME_HISTORY = 20  # Frames to track
+MIN_CONSECUTIVE_FRAMES = 15  # Dot must appear in this many CONSECUTIVE frames
 
 # Track history of ALL detected candidates per frame
 candidates_history = deque(maxlen=FRAME_HISTORY)
@@ -83,32 +83,36 @@ try:
         # Add current frame candidates to history
         candidates_history.append(candidates)
         
-        # Find the most stable dot - appears consistently in the same location
+        # Find the most stable dot - appears CONSECUTIVELY in recent frames
         best_dot = None
-        max_stability = 0
+        max_consecutive = 0
         
-        if len(candidates_history) >= MIN_STABLE_FRAMES:
-            # For each current candidate, check how stable it is across history
+        if len(candidates_history) >= MIN_CONSECUTIVE_FRAMES:
+            # For each current candidate, check consecutive appearance
             for cx, cy, area, circ in candidates:
-                # Count how many frames had a dot near this position
-                stable_count = 0
-                for past_candidates in candidates_history:
+                # Count consecutive frames with a dot near this position (going backwards)
+                consecutive_count = 0
+                for past_candidates in reversed(list(candidates_history)):
+                    found_in_frame = False
                     for past_cx, past_cy, _, _ in past_candidates:
                         # Check if past candidate is close to current position
                         dist = np.sqrt((cx - past_cx)**2 + (cy - past_cy)**2)
                         if dist < 20:  # Within 20 pixels = same dot
-                            stable_count += 1
+                            found_in_frame = True
                             break
+                    
+                    if found_in_frame:
+                        consecutive_count += 1
+                    else:
+                        # Break the consecutive chain
+                        break
                 
-                # This dot's stability score
-                stability = stable_count / len(candidates_history)
-                
-                if stability > max_stability:
-                    max_stability = stability
-                    best_dot = (cx, cy, area, circ, stable_count)
+                if consecutive_count > max_consecutive:
+                    max_consecutive = consecutive_count
+                    best_dot = (cx, cy, area, circ, consecutive_count)
             
-            # Only accept if it appears in most frames (persistent, not flickering)
-            if best_dot and best_dot[4] < MIN_STABLE_FRAMES:
+            # Only accept if it appears consecutively for minimum frames
+            if best_dot and best_dot[4] < MIN_CONSECUTIVE_FRAMES:
                 best_dot = None
         
         # Draw result
@@ -123,7 +127,7 @@ try:
             cv2.putText(frame, f"Dot: ({cx}, {cy})", 
                        (cx + 20, cy - 10),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-            cv2.putText(frame, f"Stable: {stable_count}/{len(candidates_history)}", 
+            cv2.putText(frame, f"Consecutive: {stable_count}/{MIN_CONSECUTIVE_FRAMES}", 
                        (cx + 20, cy + 20),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
         else:
