@@ -1,9 +1,3 @@
-#!/usr/bin/env python3
-"""
-Track a point of interest relative to a stable reference frame (heart assembly)
-WITH depth measurement, data export, and live plotting
-No black dot needed - works on any surface!
-"""
 import pyrealsense2 as rs
 import numpy as np
 import cv2
@@ -12,30 +6,16 @@ from datetime import datetime
 import csv
 from collections import deque
 
-print("=== RELATIVE POSITION TRACKING WITH DEPTH MEASUREMENT ===")
+print("=== RELATIVE POSITION TRACKER WITH DEPTH MEASUREMENT ===")
 print("Instructions:")
-print("1. Press 'c' to select heart assembly and point of interest")
-print("2. Tracking will start with depth measurement and live plotting")
-print("3. Press 's' to save data to CSV")
-print("4. Press 'p' to show/hide live plot")
-print("5. Press 'r' to reset tracking")
-print("6. Press 'q' to quit and save")
+print("1. Press 'a' to capture the heart assembly")
+print("2. Click on the point you want to track")
+print("3. Depth measurement starts automatically")
+print("4. Press 's' to save data to CSV")
+print("5. Press 'p' to show/hide live plot")
+print("6. Press 'r' to reset tracking")
+print("7. Press 'q' to quit and save")
 print()
-
-# Feature detection parameters
-feature_params = dict(
-    maxCorners=50,
-    qualityLevel=0.01,
-    minDistance=10,
-    blockSize=7
-)
-
-# Optical flow parameters
-lk_params = dict(
-    winSize=(15, 15),
-    maxLevel=2,
-    criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 10, 0.03)
-)
 
 # Configure streams  
 pipeline = rs.pipeline()
@@ -56,9 +36,9 @@ depth_scale = depth_sensor.get_depth_scale()
 print(f"Depth scale: {depth_scale}")
 
 # Tracking state
-reference_features = None
-relative_position = None
-old_gray = None
+assembly_template = None
+assembly_w, assembly_h = 0, 0
+target_point_relative = None  # (x, y) relative to assembly top-left
 tracking = False
 
 # Data storage
@@ -80,86 +60,52 @@ fig.canvas.manager.window.wm_geometry("+700+50")
 line, = ax.plot([], [], 'b-', linewidth=2)
 ax.set_xlabel('Time (seconds)')
 ax.set_ylabel('Distance (mm)')
-ax.set_title('Point Distance from Camera')
+ax.set_title('Target Point Distance from Camera')
 ax.grid(True)
 
-def select_reference_frame_and_point(frame):
-    """Let user select reference region (heart assembly) and point of interest"""
-    print("\n=== STEP 1: Select the heart assembly region ===")
-    print("Draw a box around the entire heart assembly, then press ENTER")
-    
+def capture_assembly(frame):
+    """Let user select the heart assembly region"""
+    print("\nSelect the entire heart assembly region, then press ENTER")
     roi = cv2.selectROI("Select Heart Assembly", frame, fromCenter=False, showCrosshair=True)
     cv2.destroyWindow("Select Heart Assembly")
     
     x, y, w, h = roi
-    if w == 0 or h == 0:
-        print("No region selected!")
-        return None, None, None
     
-    # Find good features in the assembly region
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    roi_gray = gray[y:y+h, x:x+w]
-    
-    corners = cv2.goodFeaturesToTrack(roi_gray, **feature_params)
-    
-    if corners is None or len(corners) < 4:
-        print("Not enough features found in assembly region!")
-        return None, None, None
-    
-    # Convert corners to full frame coordinates
-    corners[:, 0, 0] += x
-    corners[:, 0, 1] += y
-    
-    print(f"Found {len(corners)} tracking features in assembly")
-    
-    # Draw features on frame
-    vis_frame = frame.copy()
-    for corner in corners:
-        px, py = corner[0]
-        cv2.circle(vis_frame, (int(px), int(py)), 3, (0, 255, 0), -1)
-    
-    print("\n=== STEP 2: Click on the point you want to track ===")
-    print("Click on the specific point of interest (e.g., surface point)")
-    
-    clicked_point = [None]
-    
-    def mouse_callback(event, mx, my, flags, param):
-        if event == cv2.EVENT_LBUTTONDOWN:
-            clicked_point[0] = np.array([mx, my], dtype=np.float32)
-            cv2.circle(vis_frame, (mx, my), 8, (0, 0, 255), -1)
-            cv2.imshow("Click Point of Interest", vis_frame)
-    
-    cv2.namedWindow("Click Point of Interest")
-    cv2.setMouseCallback("Click Point of Interest", mouse_callback)
-    cv2.imshow("Click Point of Interest", vis_frame)
-    
-    print("Waiting for click...")
-    while clicked_point[0] is None:
-        if cv2.waitKey(100) & 0xFF == ord('q'):
-            cv2.destroyWindow("Click Point of Interest")
-            return None, None, None
-    
-    cv2.waitKey(500)
-    cv2.destroyWindow("Click Point of Interest")
-    
-    point_of_interest = clicked_point[0]
-    print(f"Point of interest: ({point_of_interest[0]:.1f}, {point_of_interest[1]:.1f})")
-    
-    # Calculate relative position of point to reference features
-    centroid = np.mean(corners[:, 0], axis=0)
-    relative_pos = point_of_interest - centroid
-    
-    print(f"Relative position from feature centroid: ({relative_pos[0]:.1f}, {relative_pos[1]:.1f})")
-    
-    return corners, relative_pos, (x, y, w, h)
+    if w > 50 and h > 50:
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        template = gray[int(y):int(y+h), int(x):int(x+w)]
+        return template, w, h, (x, y)
+    else:
+        print("Assembly region too small or not selected")
+        return None, 0, 0, None
 
+def select_target_point(event, x, y, flags, param):
+    """Mouse callback to select target point within assembly"""
+    global target_point_relative, tracking, start_time
+    
+    if event == cv2.EVENT_LBUTTONDOWN:
+        frame, assembly_pos = param
+        
+        if assembly_pos is not None:
+            ax, ay = assembly_pos
+            
+            if ax <= x <= ax + assembly_w and ay <= y <= ay + assembly_h:
+                target_point_relative = (x - ax, y - ay)
+                tracking = True
+                start_time = datetime.now()
+                print(f"Target point set at ({x}, {y}) - relative: {target_point_relative}")
+                print(f"Tracking started at {start_time.strftime('%H:%M:%S')}")
+            else:
+                print("Click inside the assembly region!")
+        else:
+            print("Capture assembly first with 'a'!")
 def save_data():
     """Save tracking data to CSV"""
     if len(timestamps) == 0:
         print("No data to save!")
         return
     
-    filename = f"tracking_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+    filename = f"tracking_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
     
     with open(filename, 'w', newline='') as f:
         writer = csv.writer(f)
@@ -187,11 +133,13 @@ def update_plot():
 
 try:
     # Create camera window and position it on left side
-    cv2.namedWindow('Relative Position Tracking with Depth', cv2.WINDOW_NORMAL)
-    cv2.moveWindow('Relative Position Tracking with Depth', 50, 50)
-    cv2.resizeWindow('Relative Position Tracking with Depth', 640, 480)
+    cv2.namedWindow('Assembly Tracker with Depth', cv2.WINDOW_NORMAL)
+    cv2.moveWindow('Assembly Tracker with Depth', 50, 50)
+    cv2.resizeWindow('Assembly Tracker with Depth', 640, 480)
     
-    print("Camera started. Press 'c' to start tracking...")
+    assembly_pos = None
+    
+    print("Camera started. Press 'a' to capture assembly...")
     
     while True:
         # Get aligned frames
@@ -208,113 +156,120 @@ try:
         depth_image = np.asanyarray(aligned_depth_frame.get_data())
         color_image = np.asanyarray(color_frame.get_data())
         gray = cv2.cvtColor(color_image, cv2.COLOR_BGR2GRAY)
+        display = color_image.copy()
         
-        if tracking and reference_features is not None and old_gray is not None:
-            # Track reference features
-            new_features, status, error = cv2.calcOpticalFlowPyrLK(
-                old_gray, gray, reference_features, None, **lk_params
-            )
+        # Track assembly position using template matching
+        if assembly_template is not None:
+            result = cv2.matchTemplate(gray, assembly_template, cv2.TM_CCOEFF_NORMED)
+            min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(result)
             
-            # Filter out lost features
-            good_new = new_features[status == 1]
-            
-            if len(good_new) < 4:
-                cv2.putText(color_image, "LOST TRACKING - Press 'c' to recapture", 
-                           (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 
-                           0.6, (0, 0, 255), 2)
-                tracking = False
-            else:
-                # Update reference features
-                reference_features = good_new.reshape(-1, 1, 2)
+            if max_val > 0.5:  # Good match
+                assembly_pos = max_loc
+                ax, ay = assembly_pos
                 
-                # Calculate new centroid
-                centroid = np.mean(reference_features[:, 0], axis=0)
+                # Draw assembly bounding box
+                cv2.rectangle(display, (ax, ay), 
+                            (ax + assembly_w, ay + assembly_h), 
+                            (255, 0, 0), 2)
                 
-                # Calculate point of interest position
-                point_of_interest = centroid + relative_position
-                px, py = int(point_of_interest[0]), int(point_of_interest[1])
-                
-                # Get depth at point location
-                region_size = 5
-                x1 = max(0, px - region_size)
-                x2 = min(depth_image.shape[1], px + region_size)
-                y1 = max(0, py - region_size)
-                y2 = min(depth_image.shape[0], py + region_size)
-                
-                depth_region = depth_image[y1:y2, x1:x2]
-                depth_value = np.median(depth_region[depth_region > 0])
-                
-                if depth_value > 0:
-                    distance_mm = depth_value * depth_scale * 1000
+                # If we have a target point, track and measure depth
+                if tracking and target_point_relative is not None:
+                    # Calculate absolute position from relative
+                    tx = ax + target_point_relative[0]
+                    ty = ay + target_point_relative[1]
                     
-                    # Add to rolling buffer and apply median filter
-                    distance_buffer.append(distance_mm)
-                    filtered_distance = np.median(list(distance_buffer))
+                    # Get depth at target location
+                    region_size = 5
+                    x1 = max(0, tx - region_size)
+                    x2 = min(depth_image.shape[1], tx + region_size)
+                    y1 = max(0, ty - region_size)
+                    y2 = min(depth_image.shape[0], ty + region_size)
                     
-                    # Record data
-                    elapsed_time = (datetime.now() - start_time).total_seconds()
-                    timestamps.append(elapsed_time)
-                    distances.append(filtered_distance)
-                    positions_x.append(px)
-                    positions_y.append(py)
+                    depth_region = depth_image[y1:y2, x1:x2]
+                    depth_value = np.median(depth_region[depth_region > 0])
                     
-                    # Update plot
-                    update_plot()
-                    
-                    # Draw tracked features (green)
-                    for feature in reference_features:
-                        fx, fy = feature[0]
-                        cv2.circle(color_image, (int(fx), int(fy)), 3, (0, 255, 0), -1)
-                    
-                    # Draw centroid (blue)
-                    cv2.circle(color_image, (int(centroid[0]), int(centroid[1])), 5, (255, 0, 0), -1)
-                    
-                    # Draw point of interest (red)
-                    cv2.circle(color_image, (px, py), 8, (0, 0, 255), -1)
-                    cv2.circle(color_image, (px, py), 25, (0, 0, 255), 2)
-                    cv2.drawMarker(color_image, (px, py), (0, 255, 255), 
-                                  cv2.MARKER_CROSS, 30, 2)
-                    
-                    # Display info
-                    cv2.putText(color_image, f"Distance: {filtered_distance:.1f} mm", 
-                               (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-                    cv2.putText(color_image, f"Point: ({px}, {py})", 
-                               (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
-                    cv2.putText(color_image, f"Features: {len(reference_features)}", 
-                               (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-                    cv2.putText(color_image, f"Samples: {len(timestamps)}", 
-                               (10, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-                    cv2.putText(color_image, f"Time: {elapsed_time:.1f}s", 
-                               (10, 150), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+                    if depth_value > 0:
+                        distance_mm = depth_value * depth_scale * 1000
+                        
+                        # Add to rolling buffer
+                        distance_buffer.append(distance_mm)
+                        
+                        # Apply median filter
+                        filtered_distance = np.median(list(distance_buffer))
+                        
+                        # Record data
+                        elapsed_time = (datetime.now() - start_time).total_seconds()
+                        timestamps.append(elapsed_time)
+                        distances.append(filtered_distance)
+                        positions_x.append(tx)
+                        positions_y.append(ty)
+                        
+                        # Update plot
+                        update_plot()
+                        
+                        # Draw target point
+                        cv2.circle(display, (tx, ty), 8, (0, 255, 0), -1)
+                        cv2.circle(display, (tx, ty), 25, (0, 255, 0), 2)
+                        
+                        # Draw crosshair
+                        cv2.line(display, (tx - 15, ty), (tx + 15, ty), (0, 255, 0), 2)
+                        cv2.line(display, (tx, ty - 15), (tx, ty + 15), (0, 255, 0), 2)
+                        
+                        # Display info
+                        cv2.putText(display, f"Distance: {filtered_distance:.1f} mm", 
+                                   (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 
+                                   0.7, (0, 255, 0), 2)
+                        cv2.putText(display, f"Position: ({tx}, {ty})", 
+                                   (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 
+                                   0.6, (0, 255, 0), 2)
+                        cv2.putText(display, f"Assembly conf: {max_val:.3f}", 
+                                   (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 
+                                   0.6, (0, 255, 0), 2)
+                        cv2.putText(display, f"Samples: {len(timestamps)}", 
+                                   (10, 120), cv2.FONT_HERSHEY_SIMPLEX, 
+                                   0.6, (0, 255, 0), 2)
+                        cv2.putText(display, f"Time: {elapsed_time:.1f}s", 
+                                   (10, 150), cv2.FONT_HERSHEY_SIMPLEX, 
+                                   0.6, (0, 255, 0), 2)
+                    else:
+                        cv2.putText(display, "No depth data", (10, 180),
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
                 else:
-                    cv2.putText(color_image, "No depth data", (10, 180),
-                               cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
+                    cv2.putText(display, "Assembly found - Click to select target point", 
+                               (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 
+                               0.6, (255, 255, 0), 2)
+            else:
+                assembly_pos = None
+                cv2.putText(display, f"Assembly lost (conf: {max_val:.3f})", 
+                           (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 
+                           0.7, (0, 0, 255), 2)
         else:
-            cv2.putText(color_image, "Press 'c' to start tracking", 
-                       (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
-        
-        # Update old frame
-        old_gray = gray.copy()
+            cv2.putText(display, "Press 'a' to capture assembly", 
+                       (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 
+                       0.7, (255, 255, 0), 2)
         
         # Display controls
-        cv2.putText(color_image, "c=capture | s=save | p=plot | r=reset | q=quit", 
-                   (10, color_image.shape[0] - 10),
+        cv2.putText(display, "a=assembly | click=target | s=save | p=plot | r=reset | q=quit", 
+                   (10, display.shape[0] - 10),
                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
         
-        cv2.imshow('Relative Position Tracking with Depth', color_image)
+        # Set mouse callback with current params
+        cv2.setMouseCallback('Assembly Tracker with Depth', select_target_point, 
+                            param=(color_image, assembly_pos))
+        
+        cv2.imshow('Assembly Tracker with Depth', display)
         
         key = cv2.waitKey(1) & 0xFF
         if key == ord('q'):
             break
-        elif key == ord('c'):
-            # Capture reference and point
-            result = select_reference_frame_and_point(color_image)
-            if result[0] is not None:
-                reference_features, relative_position, roi = result
-                old_gray = gray.copy()
-                tracking = True
-                start_time = datetime.now()
-                print(f"✓ Tracking started at {start_time.strftime('%H:%M:%S')}")
+        elif key == ord('a'):
+            # Capture assembly
+            assembly_template, assembly_w, assembly_h, initial_pos = capture_assembly(color_image)
+            if assembly_template is not None:
+                assembly_pos = initial_pos
+                tracking = False
+                target_point_relative = None
+                print("Assembly captured! Now click on the point you want to track")
         elif key == ord('s'):
             save_data()
         elif key == ord('p'):
@@ -324,12 +279,24 @@ try:
             else:
                 plt.close()
         elif key == ord('r'):
-            # Reset tracking
-            reference_features = None
-            relative_position = None
-            old_gray = None
+            # Reset everything
+            assembly_template = None
+            assembly_pos = None
+            target_point_relative = None
             tracking = False
-            print("Tracking reset")
+            print("Reset - press 'a' to capture assembly again")
+    
+    while True:
+        # Get aligned frames
+        frames = pipeline.wait_for_frames()
+        aligned_frames = align.process(frames)
+        
+        aligned_depth_frame = aligned_frames.get_depth_frame()
+        color_frame = aligned_frames.get_color_frame()
+        
+        if not aligned_depth_frame or not color_frame:
+            continue
+        
             
 finally:
     pipeline.stop()
@@ -346,13 +313,14 @@ finally:
         plt.plot(timestamps, distances, 'b-', linewidth=2)
         plt.xlabel('Time (seconds)', fontsize=12)
         plt.ylabel('Distance (mm)', fontsize=12)
-        plt.title('Dot Distance Over Time', fontsize=14)
+        plt.title('Target Point Distance Over Time', fontsize=14)
         plt.grid(True, alpha=0.3)
         plt.tight_layout()
         
-        plot_filename = f"dot_tracking_plot_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+        plot_filename = f"tracking_plot_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
         plt.savefig(plot_filename, dpi=150)
         print(f"✓ Plot saved to {plot_filename}")
         plt.show()
     
     print("\nTracking complete!")
+
