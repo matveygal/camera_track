@@ -48,7 +48,7 @@ positions_y = []
 start_time = None
 
 # Rolling median filter settings
-FILTER_WINDOW_SIZE = 10
+FILTER_WINDOW_SIZE = 20  # Increased from 10 to better smooth 0.5mm jumps
 distance_buffer = deque(maxlen=FILTER_WINDOW_SIZE)
 
 def capture_assembly(frame):
