@@ -126,10 +126,14 @@ def save_data():
 def update_plot():
     """Update the live plot"""
     if len(timestamps) > 1 and show_plot:
-        line.set_data(timestamps, distances)
-        ax.relim()
-        ax.autoscale_view()
-        plt.pause(0.001)
+        try:
+            line.set_data(timestamps, distances)
+            ax.relim()
+            ax.autoscale_view()
+            fig.canvas.draw()
+            fig.canvas.flush_events()
+        except:
+            pass  # Ignore plot errors to not crash tracking
 
 try:
     # Create camera window and position it on left side
@@ -175,8 +179,8 @@ try:
                 # If we have a target point, track and measure depth
                 if tracking and target_point_relative is not None:
                     # Calculate absolute position from relative
-                    tx = ax + target_point_relative[0]
-                    ty = ay + target_point_relative[1]
+                    tx = int(ax + target_point_relative[0])
+                    ty = int(ay + target_point_relative[1])
                     
                     # Get depth at target location
                     region_size = 5
