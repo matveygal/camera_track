@@ -12,9 +12,8 @@ print("1. Press 'a' to capture the heart assembly")
 print("2. Click on the point you want to track")
 print("3. Depth measurement starts automatically")
 print("4. Press 's' to save data to CSV")
-print("5. Press 'p' to show/hide live plot")
-print("6. Press 'r' to reset tracking")
-print("7. Press 'q' to quit and save")
+print("5. Press 'r' to reset tracking")
+print("6. Press 'q' to quit and save (plot will be generated)")
 print()
 
 # Configure streams  
@@ -51,12 +50,6 @@ start_time = None
 # Rolling median filter settings
 FILTER_WINDOW_SIZE = 10
 distance_buffer = deque(maxlen=FILTER_WINDOW_SIZE)
-
-# Plot settings
-show_plot = False  # Disabled by default to avoid GIL conflicts
-fig = None
-ax = None
-line = None
 
 def capture_assembly(frame):
     """Let user select the heart assembly region"""
@@ -118,37 +111,6 @@ def save_data():
     print(f"  Duration: {timestamps[-1]:.2f} seconds")
     print(f"  Distance range: {min(distances):.1f} - {max(distances):.1f} mm")
 
-def update_plot():
-    """Update the live plot"""
-    global fig, ax, line
-    
-    if not show_plot or len(timestamps) < 2:
-        return
-    
-    try:
-        # Initialize plot if needed
-        if fig is None:
-            plt.ion()
-            fig, ax = plt.subplots(figsize=(10, 4))
-            try:
-                fig.canvas.manager.window.wm_geometry("+700+50")
-            except:
-                pass  # Ignore if window positioning fails
-            line, = ax.plot([], [], 'b-', linewidth=2)
-            ax.set_xlabel('Time (seconds)')
-            ax.set_ylabel('Distance (mm)')
-            ax.set_title('Target Point Distance from Camera')
-            ax.grid(True)
-            plt.show(block=False)
-        
-        # Update plot data
-        line.set_data(timestamps, distances)
-        ax.relim()
-        ax.autoscale_view()
-        fig.canvas.draw_idle()  # Use draw_idle instead of draw for thread safety
-        fig.canvas.flush_events()
-    except:
-        pass  # Ignore plot errors to not crash tracking
 
 try:
     # Create camera window and position it on left side
@@ -223,9 +185,6 @@ try:
                         positions_x.append(tx)
                         positions_y.append(ty)
                         
-                        # Update plot
-                        update_plot()
-                        
                         # Draw target point
                         cv2.circle(display, (tx, ty), 8, (0, 255, 0), -1)
                         cv2.circle(display, (tx, ty), 25, (0, 255, 0), 2)
@@ -268,7 +227,7 @@ try:
                        0.7, (255, 255, 0), 2)
         
         # Display controls
-        cv2.putText(display, "a=assembly | click=target | s=save | p=plot | r=reset | q=quit", 
+        cv2.putText(display, "a=assembly | click=target | s=save | r=reset | q=quit", 
                    (10, display.shape[0] - 10),
                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
         
@@ -291,18 +250,6 @@ try:
                 print("Assembly captured! Now click on the point you want to track")
         elif key == ord('s'):
             save_data()
-        elif key == ord('p'):
-            show_plot = not show_plot
-            if show_plot:
-                print("Live plot enabled")
-                update_plot()  # Initialize and show plot
-            else:
-                print("Live plot disabled")
-                if fig is not None:
-                    plt.close(fig)
-                    fig = None
-                    ax = None
-                    line = None
         elif key == ord('r'):
             # Reset everything
             assembly_template = None
