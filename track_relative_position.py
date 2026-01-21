@@ -1,19 +1,27 @@
 #!/usr/bin/env python3
 """
 Track a point of interest relative to a stable reference frame (heart assembly)
-User clicks on point → we track it relative to matched features from reference image
+User clicks on point → we track it relative to tracked features on the frame
 No black dot needed - works on any surface!
-Uses feature matching (not optical flow) so it can recover from occlusions
 """
 import pyrealsense2 as rs
 import numpy as np
 import cv2
 
-# ORB feature detector (fast and robust)
-orb = cv2.ORB_create(nfeatures=500)
+# Feature detection parameters
+feature_params = dict(
+    maxCorners=50,
+    qualityLevel=0.01,
+    minDistance=10,
+    blockSize=7
+)
 
-# Feature matcher
-bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
+# Optical flow parameters
+lk_params = dict(
+    winSize=(15, 15),
+    maxLevel=2,
+    criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 10, 0.03)
+)
 
 def select_reference_frame_and_point(frame):
     """Let user select reference region (heart assembly) and point of interest"""
@@ -26,26 +34,29 @@ def select_reference_frame_and_point(frame):
     x, y, w, h = roi
     if w == 0 or h == 0:
         print("No region selected!")
-        return None, None, None, None, None
+        return None, None, None
     
-    # Extract and store reference image
+    # Find good features in the assembly region
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    reference_image = gray[y:y+h, x:x+w].copy()
+    roi_gray = gray[y:y+h, x:x+w]
     
-    # Detect keypoints and compute descriptors in reference region
-    keypoints, descriptors = orb.detectAndCompute(reference_image, None)
+    corners = cv2.goodFeaturesToTrack(roi_gray, **feature_params)
     
-    if keypoints is None or len(keypoints) < 10:
+    if corners is None or len(corners) < 4:
         print("Not enough features found in assembly region!")
-        return None, None, None, None, None
+        return None, None, None
     
-    print(f"Found {len(keypoints)} features in reference image")
+    # Convert corners to full frame coordinates
+    corners[:, 0, 0] += x
+    corners[:, 0, 1] += y
     
-    # Convert keypoints to full frame coordinates for visualization
+    print(f"Found {len(corners)} tracking features in assembly")
+    
+    # Draw features on frame
     vis_frame = frame.copy()
-    for kp in keypoints:
-        px, py = kp.pt
-        cv2.circle(vis_frame, (int(px + x), int(py + y)), 3, (0, 255, 0), -1)
+    for corner in corners:
+        px, py = corner[0]
+        cv2.circle(vis_frame, (int(px), int(py)), 3, (0, 255, 0), -1)
     
     print("\n=== STEP 2: Click on the point you want to track ===")
     print("Click on the specific point of interest (e.g., where dot would be)")
@@ -77,13 +88,15 @@ def select_reference_frame_and_point(frame):
     # Calculate relative position of point to reference features
     # Use centroid of features as reference origin
     centroid = np.mean(corners[:, 0], axis=0)
-    relative_pos = point_of_interest - centroiROI origin
-    # We need to store position relative to the ROI, not absolute
-    relative_pos = point_of_interest - np.array([x, y])
+    relative_pos = point_of_interest - centroid
     
-    print(f"Relative position from ROI origin: ({relative_pos[0]:.1f}, {relative_pos[1]:.1f})")
+    print(f"Relative position from feature centroid: ({relative_pos[0]:.1f}, {relative_pos[1]:.1f})")
     
-    return reference_image, keypoints, descriptoRealSense
+    # Store reference frame for feature recovery
+    return corners, relative_pos, (x, y, w, h), frame.copy(), gray.copy()
+
+def main():
+    # Configure RealSense
     pipeline = rs.pipeline()
     config = rs.config()
     config.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)
@@ -93,11 +106,14 @@ def select_reference_frame_and_point(frame):
     
     # State
     reference_features = None
-    relative_pimage = None
-    reference_keypoints = None
-    reference_descriptors = None
+    initial_features = None  # Store initial feature positions
     relative_position = None
-    reference_roi = False
+    old_gray = None
+    reference_frame = None  # Store reference color frame
+    reference_gray = None   # Store reference gray frame
+    roi_bounds = None       # ROI bounds (x, y, w, h)
+    tracking = False
+    min_features = 10       # Minimum features needed to continue tracking
     
     print("\nControls:")
     print("  c - Capture reference frame and select point")
@@ -117,75 +133,90 @@ def select_reference_frame_and_point(frame):
                 continue
             
             frame = np.asanyarray(color_frame.get_data())
-            frame = np.asanyarray(color_frame.get_data())
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             
-            if tracking and reference_descriptors is not None:
-                # Detect features in current frame
-                current_keypoints, current_descriptors = orb.detectAndCompute(gray, None)
+            if tracking and reference_features is not None and old_gray is not None:
+                # Track reference features
+                new_features, status, error = cv2.calcOpticalFlowPyrLK(
+                    old_gray, gray, reference_features, None, **lk_params
+                )
                 
-                if current_descriptors is not None and len(current_keypoints) >= 10:
-                    # Match features between reference and current frame
-                    matches = bf.match(reference_descriptors, current_descriptors)
+                # Filter out lost features
+                good_new = new_features[status == 1]
+                good_old = reference_features[status == 1]
+                
+                # If features dropped below minimum, try to recover
+                if len(good_new) < min_features and reference_gray is not None and roi_bounds is not None:
+                    print(f"Features dropped to {len(good_new)}, attempting recovery...")
                     
-                    # Sort by distance (best matches first)
-                    matches = sorted(matches, key=lambda x: x.distance)
+                    # Re-detect features in current frame within ROI
+                    x, y, w, h = roi_bounds
                     
-                    # Keep only good matches (top 50 or those with distance < threshold)
-                    good_matches = [m for m in matches if m.distance < 50][:50]
+                    # Expand search region slightly
+                    search_margin = 30
+                    x1 = max(0, x - search_margin)
+                    y1 = max(0, y - search_margin)
+                    x2 = min(gray.shape[1], x + w + search_margin)
+                    y2 = min(gray.shape[0], y + h + search_margin)
                     
-                    if len(good_matches) < 10:
-                        cv2.putText(frame, f"WEAK TRACKING ({len(good_matches)} matches) - Move camera back", 
-                                   (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 
-                                   0.6, (0, 165, 255), 2)
+                    search_roi = gray[y1:y2, x1:x2]
+                    recovered_features = cv2.goodFeaturesToTrack(search_roi, **feature_params)
+                    
+                    if recovered_features is not None and len(recovered_features) >= min_features:
+                        # Convert to full frame coordinates
+                        recovered_features[:, 0, 0] += x1
+                        recovered_features[:, 0, 1] += y1
+                        reference_features = recovered_features
+                        good_new = recovered_features
+                        print(f"✓ Recovered {len(recovered_features)} features!")
                     else:
-                        # Extract matched keypoints
-                        ref_pts = np.float32([reference_keypoints[m.queryIdx].pt for m in good_matches])
-                        curr_pts = np.float32([current_keypoints[m.trainIdx].pt for m in good_matches])
-                        
-                        # Find homography (transformation from reference to current)
-                        H, mask = cv2.findHomography(ref_pts, curr_pts, cv2.RANSAC, 5.0)
-                        
-                        if H is not None:
-                            # Transform the relative position using homography
-                            rel_point = np.array([[relative_position]], dtype=np.float32)
-                            transformed_point = cv2.perspectiveTransform(rel_point, H)
-                            
-                            # Add ROI offset
-                            px = int(transformed_point[0][0][0] + reference_roi[0])
-                            py = int(transformed_point[0][0][1] + reference_roi[1])
-                            
-                            # Draw matched features (green)
-                            for i, m in enumerate(good_matches):
-                                if mask[i]:
-                                    pt = current_keypoints[m.trainIdx].pt
-                                    cv2.circle(frame, (int(pt[0]), int(pt[1])), 2, (0, 255, 0), -1)
-                            
-                            # Draw point of interest (red - large)
-                            cv2.circle(frame, (px, py), 8, (0, 0, 255), -1)
-                            cv2.circle(frame, (px, py), 25, (0, 0, 255), 2)
-                            cv2.drawMarker(frame, (px, py), (0, 255, 255), 
-                                          cv2.MARKER_CROSS, 30, 2)
-                            
-                            # Display info
-                            cv2.putText(frame, f"Point: ({px}, {py})", 
-                                       (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 
-                                       0.7, (0, 0, 255), 2)
-                            cv2.putText(frame, f"Matches: {len(good_matches)} ({sum(mask)}/{len(mask)} inliers)", 
-                                       (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 
-                                       0.6, (0, 255, 0), 2)
-                        else:
-                            cv2.putText(frame, "NO HOMOGRAPHY - Press 'c' to recapture", 
-                                       (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 
-                                       0.6, (0, 0, 255), 2)
-                else:
-                    cv2.putText(frame, "NO FEATURES DETECTED - Check lighting/occlusion", 
+                        cv2.putText(frame, "LOST TRACKING - Press 'c' to recapture", 
+                                   (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 
+                                   0.6, (0, 0, 255), 2)
+                        tracking = False
+                
+                if tracking and len(good_new) >= 4:
+                    # Update reference features
+                    reference_features = good_new.reshape(-1, 1, 2)
+                    
+                    # Calculate new centroid
+                    centroid = np.mean(reference_features[:, 0], axis=0)
+                    
+                    # Calculate point of interest position
+                    point_of_interest = centroid + relative_position
+                    px, py = int(point_of_interest[0]), int(point_of_interest[1])
+                    
+                    # Draw tracked features (green)
+                    for feature in reference_features:
+                        fx, fy = feature[0]
+                        cv2.circle(frame, (int(fx), int(fy)), 3, (0, 255, 0), -1)
+                    
+                    # Draw centroid (blue)
+                    cv2.circle(frame, (int(centroid[0]), int(centroid[1])), 5, (255, 0, 0), -1)
+                    
+                    # Draw point of interest (red - large)
+                    cv2.circle(frame, (px, py), 8, (0, 0, 255), -1)
+                    cv2.circle(frame, (px, py), 25, (0, 0, 255), 2)
+                    cv2.drawMarker(frame, (px, py), (0, 255, 255), 
+                                  cv2.MARKER_CROSS, 30, 2)
+                    
+                    # Display info
+                    cv2.putText(frame, f"Point: ({px}, {py})", 
                                (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 
-                               0.6, (0, 0, 255), 2)
+                               0.7, (0, 0, 255), 2)
+                    cv2.putText(frame, f"Features: {len(reference_features)}", 
+                               (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 
+                               0.6, (0, 255, 0), 2)
+                    cv2.putText(frame, f"Centroid: ({int(centroid[0])}, {int(centroid[1])})", 
+                               (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 
+                               0.5, (255, 0, 0), 2)
             else:
                 cv2.putText(frame, "Press 'c' to start tracking", 
                            (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 
                            0.7, (255, 255, 0), 2)
+            
+            # Update old frame
+            old_gray = gray.copy()
             
             # Display controls
             cv2.putText(frame, "c=capture | r=reset | q=quit", 
@@ -201,16 +232,20 @@ def select_reference_frame_and_point(frame):
                 # Capture reference and point
                 result = select_reference_frame_and_point(frame)
                 if result[0] is not None:
-                    reference_image, reference_keypoints, reference_descriptors, relative_position, reference_roi = result
+                    reference_features, relative_position, roi_bounds, reference_frame, reference_gray = result
+                    initial_features = reference_features.copy()
+                    old_gray = gray.copy()
                     tracking = True
-                    print("Tracking started!")
+                    print(f"Tracking started with {len(reference_features)} features!")
             elif key == ord('r'):
                 # Reset
-                reference_image = None
-                reference_keypoints = None
-                reference_descriptors = None
+                reference_features = None
+                initial_features = None
                 relative_position = None
-                reference_roi = None
+                old_gray = None
+                reference_frame = None
+                reference_gray = None
+                roi_bounds = None
                 tracking = False
                 print("Tracking reset")
     
