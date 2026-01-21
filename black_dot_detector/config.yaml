@@ -1,0 +1,148 @@
+# Black Dot Detector Configuration File
+
+# Camera Configuration (Intel RealSense D435i)
+camera:
+  # Resolution options: [640, 480], [1280, 720], [1920, 1080]
+  rgb_resolution: [1280, 720]
+  depth_resolution: [640, 480]
+  framerate: 30
+  # Enable depth stream (set to false if only RGB needed)
+  enable_depth: true
+  # Auto-exposure settings
+  auto_exposure: true
+  # Camera serial number (leave empty for first available camera)
+  serial_number: ""
+
+# Data Paths
+paths:
+  raw_images: "data/raw_images"
+  camera_captures: "data/camera_captures"
+  annotations_file: "data/annotations.json"
+  dataset_dir: "data/dataset"
+  models_dir: "models/trained_models"
+  results_dir: "results"
+  training_metrics_dir: "results/training_metrics"
+  detections_dir: "results/detections"
+  feedback_file: "results/feedback.json"
+
+# Annotation Tool Settings
+annotation:
+  # Size of the dot marker in the GUI
+  dot_marker_size: 10
+  # Color of the marker (BGR format)
+  marker_color: [0, 255, 0]  # Green
+  # Window size for display
+  display_width: 1280
+  display_height: 720
+  # Keyboard shortcuts
+  keys:
+    next_image: "n"
+    previous_image: "p"
+    save_annotation: "s"
+    skip_image: "k"
+    capture_camera: "c"
+    quit: "q"
+
+# Training Configuration
+training:
+  # Model architecture: "yolov8", "yolov5", "custom_cnn"
+  model_architecture: "yolov8"
+  # Model size for YOLO: n, s, m, l, x (nano to extra-large)
+  model_size: "n"
+  # Use pretrained weights
+  pretrained: true
+  # Training/validation split ratio
+  train_val_split: 0.8
+  # Batch size
+  batch_size: 16
+  # Number of epochs
+  epochs: 100
+  # Learning rate
+  learning_rate: 0.001
+  # Image size for training (model input size)
+  image_size: 640
+  # Early stopping patience (epochs without improvement)
+  patience: 20
+  # Device: "cuda", "mps" (M1/M2 Mac), "cpu"
+  device: "auto"  # Auto-detect best available
+  # Number of workers for data loading
+  workers: 4
+  # Save checkpoint frequency (epochs)
+  save_frequency: 10
+
+# Data Augmentation
+augmentation:
+  enabled: true
+  # Rotation range in degrees
+  rotation_range: 15
+  # Brightness adjustment range [min, max]
+  brightness_range: [0.7, 1.3]
+  # Contrast adjustment range [min, max]
+  contrast_range: [0.8, 1.2]
+  # Horizontal flip probability
+  horizontal_flip: 0.5
+  # Vertical flip probability
+  vertical_flip: 0.3
+  # Random crop probability
+  random_crop: 0.3
+  # Gaussian noise
+  gaussian_noise: 0.2
+  # Blur probability
+  blur: 0.2
+
+# Detection Settings
+detection:
+  # Confidence threshold for detections (0.0 - 1.0)
+  confidence_threshold: 0.5
+  # NMS IoU threshold
+  iou_threshold: 0.45
+  # Maximum detections per image (should be 1 for single dot)
+  max_detections: 1
+  # Display settings
+  display:
+    show_confidence: true
+    show_coordinates: true
+    dot_color: [0, 255, 0]  # Green (BGR)
+    dot_radius: 10
+    text_color: [255, 255, 255]  # White
+    text_size: 0.6
+  # Live camera detection
+  live_camera:
+    display_fps: true
+    save_detections: true
+    detection_save_interval: 30  # Save every N frames
+  # Use depth data for validation (if available)
+  use_depth_validation: false
+  # Depth range for valid detections (in meters)
+  depth_range: [0.3, 2.0]
+
+# Model Selection
+model:
+  # Path to trained model file (relative to models_dir)
+  # Leave empty to use latest trained model
+  model_file: ""
+  # Fallback to pretrained if custom model not found
+  use_pretrained_fallback: true
+
+# Validation Feedback System
+feedback:
+  enabled: true
+  # Ask for confirmation after each detection
+  require_confirmation: false
+  # Log all detections for analysis
+  log_all_detections: true
+
+# Logging
+logging:
+  level: "INFO"  # DEBUG, INFO, WARNING, ERROR
+  save_logs: true
+  log_file: "results/system.log"
+
+# Performance
+performance:
+  # Use mixed precision training (faster on modern GPUs)
+  mixed_precision: false
+  # Compile model for faster inference (PyTorch 2.0+)
+  compile_model: false
+  # Cache dataset in memory
+  cache_dataset: false
