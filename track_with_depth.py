@@ -69,7 +69,7 @@ def capture_assembly(frame):
 
 def select_target_point(event, x, y, flags, param):
     """Mouse callback to select target point within assembly"""
-    global target_point_relative, tracking, start_time
+    global target_point_relative, tracking, start_time, timestamps, distances, positions_x, positions_y, distance_buffer
     
     if event == cv2.EVENT_LBUTTONDOWN:
         frame, assembly_pos = param
@@ -81,8 +81,16 @@ def select_target_point(event, x, y, flags, param):
                 target_point_relative = (x - ax, y - ay)
                 tracking = True
                 start_time = datetime.now()
+                
+                # Clear all previous data
+                timestamps.clear()
+                distances.clear()
+                positions_x.clear()
+                positions_y.clear()
+                distance_buffer.clear()
+                
                 print(f"Target point set at ({x}, {y}) - relative: {target_point_relative}")
-                print(f"Tracking started at {start_time.strftime('%H:%M:%S')}")
+                print(f"Tracking started at {start_time.strftime('%H:%M:%S')} - previous data cleared")
             else:
                 print("Click inside the assembly region!")
         else:
@@ -111,10 +119,14 @@ def save_data():
     print(f"  Duration: {timestamps[-1]:.2f} seconds")
     print(f"  Distance range: {min(distances):.1f} - {max(distances):.1f} mm")
 
-def draw_graph_on_frame(frame, x_offset=10, y_offset=200, width=300, height=150):
+def draw_graph_on_frame(frame, width=280, height=140):
     """Draw a real-time graph directly on the video frame using OpenCV"""
     if len(distances) < 2:
         return
+    
+    # Position in bottom-right corner
+    x_offset = frame.shape[1] - width - 10
+    y_offset = frame.shape[0] - height - 35  # Leave room for controls text
     
     # Create graph background
     cv2.rectangle(frame, (x_offset, y_offset), 
