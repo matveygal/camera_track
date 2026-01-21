@@ -3,13 +3,8 @@
 # Camera Configuration (Intel RealSense D435i)
 camera:
   # Resolution options: [640, 480], [1280, 720], [1920, 1080]
-  rgb_resolution: [1280, 720]
-  depth_resolution: [640, 480]
+  rgb_resolution: [640, 480]
   framerate: 30
-  # Enable depth stream (set to false if only RGB needed)
-  enable_depth: true
-  # Auto-exposure settings
-  auto_exposure: true
   # Camera serial number (leave empty for first available camera)
   serial_number: ""
 
