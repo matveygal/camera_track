@@ -340,25 +340,21 @@ finally:
     # Save data automatically on exit if we have data
     if len(timestamps) > 0:
         save_data()
-    
-    # Show final plot
-    if len(timestamps) > 1:
-        plt.figure(figsize=(12, 6))
-        plt.plot(timestamps, distances, 'b-', linewidth=2)
-        plt.xlabel('Time (seconds)', fontsize=12)
-        plt.ylabel('Distance (mm)', fontsize=12)
-        plt.title('Target Point Distance Over Time', fontsize=14)
-        plt.grid(True, alpha=0.3)
-        plt.tight_layout()
         
-        plot_filename = f"tracking_plot_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
-        plt.savefig(plot_filename, dpi=150)
-        print(f"✓ Plot saved to {plot_filename}")
-        
-        # Show plot without blocking
-        plt.show(block=False)
-        plt.pause(3)  # Show for 3 seconds
-        plt.close()
+        # Generate and save plot (no display to avoid hanging)
+        if len(timestamps) > 1:
+            plt.figure(figsize=(12, 6))
+            plt.plot(timestamps, distances, 'b-', linewidth=2)
+            plt.xlabel('Time (seconds)', fontsize=12)
+            plt.ylabel('Distance (mm)', fontsize=12)
+            plt.title('Target Point Distance Over Time', fontsize=14)
+            plt.grid(True, alpha=0.3)
+            plt.tight_layout()
+            
+            plot_filename = f"tracking_plot_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+            plt.savefig(plot_filename, dpi=150)
+            plt.close('all')  # Close without displaying
+            print(f"✓ Plot saved to {plot_filename}")
     
     print("\nTracking complete!")
 
