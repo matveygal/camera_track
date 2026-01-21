@@ -145,32 +145,59 @@ def main():
                 good_new = new_features[status == 1]
                 good_old = reference_features[status == 1]
                 
-                # If features dropped below minimum, try to recover
+                # If features dropped below minimum, try to recover by matching reference
                 if len(good_new) < min_features and reference_gray is not None and roi_bounds is not None:
-                    print(f"Features dropped to {len(good_new)}, attempting recovery...")
+                    print(f"Features dropped to {len(good_new)}, attempting recovery via template matching...")
                     
-                    # Re-detect features in current frame within ROI
                     x, y, w, h = roi_bounds
                     
-                    # Expand search region slightly
-                    search_margin = 30
+                    # Get reference ROI template
+                    ref_template = reference_gray[y:y+h, x:x+w]
+                    
+                    # Search in expanded region of current frame
+                    search_margin = 50
                     x1 = max(0, x - search_margin)
                     y1 = max(0, y - search_margin)
                     x2 = min(gray.shape[1], x + w + search_margin)
                     y2 = min(gray.shape[0], y + h + search_margin)
                     
-                    search_roi = gray[y1:y2, x1:x2]
-                    recovered_features = cv2.goodFeaturesToTrack(search_roi, **feature_params)
+                    search_region = gray[y1:y2, x1:x2]
                     
-                    if recovered_features is not None and len(recovered_features) >= min_features:
-                        # Convert to full frame coordinates
-                        recovered_features[:, 0, 0] += x1
-                        recovered_features[:, 0, 1] += y1
-                        reference_features = recovered_features
-                        good_new = recovered_features
-                        print(f"✓ Recovered {len(recovered_features)} features!")
+                    # Try to find the reference template in current frame
+                    if search_region.shape[0] >= ref_template.shape[0] and search_region.shape[1] >= ref_template.shape[1]:
+                        result = cv2.matchTemplate(search_region, ref_template, cv2.TM_CCOEFF_NORMED)
+                        min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(result)
+                        
+                        if max_val > 0.5:  # Good match found
+                            # Found the assembly! Re-detect features there
+                            matched_x = x1 + max_loc[0]
+                            matched_y = y1 + max_loc[1]
+                            
+                            matched_roi = gray[matched_y:matched_y+h, matched_x:matched_x+w]
+                            recovered_features = cv2.goodFeaturesToTrack(matched_roi, **feature_params)
+                            
+                            if recovered_features is not None and len(recovered_features) >= min_features:
+                                # Convert to full frame coordinates
+                                recovered_features[:, 0, 0] += matched_x
+                                recovered_features[:, 0, 1] += matched_y
+                                reference_features = recovered_features
+                                good_new = recovered_features
+                                
+                                # Update ROI position
+                                roi_bounds = (matched_x, matched_y, w, h)
+                                
+                                print(f"✓ Recovered {len(recovered_features)} features! (confidence: {max_val:.2f})")
+                            else:
+                                cv2.putText(frame, f"Found assembly but no features (conf: {max_val:.2f})", 
+                                           (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 
+                                           0.5, (0, 165, 255), 2)
+                        else:
+                            cv2.putText(frame, f"Assembly not found - Press 'c' to recapture", 
+                                       (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 
+                                       0.6, (0, 0, 255), 2)
+                            tracking = False
                     else:
-                        cv2.putText(frame, "LOST TRACKING - Press 'c' to recapture", 
+                        cv2.putText(frame, "Search region too small", 
                                    (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 
                                    0.6, (0, 0, 255), 2)
                         tracking = False
