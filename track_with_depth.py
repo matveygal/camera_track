@@ -66,6 +66,7 @@ distance_buffer = deque(maxlen=FILTER_WINDOW_SIZE)
 show_plot = True
 plt.ion()  # Interactive mode
 fig, ax = plt.subplots(figsize=(10, 4))
+fig.canvas.manager.window.wm_geometry("+700+50")  # Position plot on right side
 line, = ax.plot([], [], 'b-', linewidth=2)
 ax.set_xlabel('Time (seconds)')
 ax.set_ylabel('Distance (mm)')
@@ -174,6 +175,11 @@ def update_plot():
         plt.pause(0.001)
 
 try:
+    # Create camera window and position it on left side
+    cv2.namedWindow('Optical Flow Tracking with Depth', cv2.WINDOW_NORMAL)
+    cv2.moveWindow('Optical Flow Tracking with Depth', 50, 50)
+    cv2.resizeWindow('Optical Flow Tracking with Depth', 640, 480)
+    
     print("Camera started. Press 'c' to capture dot...")
     
     while True:
