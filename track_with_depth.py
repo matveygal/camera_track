@@ -111,6 +111,53 @@ def save_data():
     print(f"  Duration: {timestamps[-1]:.2f} seconds")
     print(f"  Distance range: {min(distances):.1f} - {max(distances):.1f} mm")
 
+def draw_graph_on_frame(frame, x_offset=10, y_offset=200, width=300, height=150):
+    """Draw a real-time graph directly on the video frame using OpenCV"""
+    if len(distances) < 2:
+        return
+    
+    # Create graph background
+    cv2.rectangle(frame, (x_offset, y_offset), 
+                 (x_offset + width, y_offset + height), 
+                 (40, 40, 40), -1)
+    cv2.rectangle(frame, (x_offset, y_offset), 
+                 (x_offset + width, y_offset + height), 
+                 (100, 100, 100), 2)
+    
+    # Calculate scaling
+    min_dist = min(distances)
+    max_dist = max(distances)
+    dist_range = max_dist - min_dist if max_dist > min_dist else 1
+    
+    time_range = timestamps[-1] - timestamps[0] if timestamps[-1] > timestamps[0] else 1
+    
+    # Draw grid lines
+    for i in range(5):
+        y = y_offset + int((i / 4) * height)
+        cv2.line(frame, (x_offset, y), (x_offset + width, y), (60, 60, 60), 1)
+    
+    # Draw graph line
+    points = []
+    for i in range(len(distances)):
+        x = x_offset + int(((timestamps[i] - timestamps[0]) / time_range) * width)
+        y = y_offset + height - int(((distances[i] - min_dist) / dist_range) * height)
+        points.append((x, y))
+    
+    # Draw lines connecting points
+    for i in range(len(points) - 1):
+        cv2.line(frame, points[i], points[i + 1], (0, 255, 0), 2)
+    
+    # Draw labels
+    cv2.putText(frame, f"Min: {min_dist:.1f} mm", 
+               (x_offset + 5, y_offset + height - 5),
+               cv2.FONT_HERSHEY_SIMPLEX, 0.4, (200, 200, 200), 1)
+    cv2.putText(frame, f"Max: {max_dist:.1f} mm", 
+               (x_offset + 5, y_offset + 15),
+               cv2.FONT_HERSHEY_SIMPLEX, 0.4, (200, 200, 200), 1)
+    cv2.putText(frame, f"Time: {timestamps[-1]:.1f}s", 
+               (x_offset + width - 80, y_offset + height - 5),
+               cv2.FONT_HERSHEY_SIMPLEX, 0.4, (200, 200, 200), 1)
+
 
 try:
     # Create camera window and position it on left side
@@ -226,6 +273,10 @@ try:
                        (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 
                        0.7, (255, 255, 0), 2)
         
+        # Draw real-time graph if we have data
+        if len(distances) > 1:
+            draw_graph_on_frame(display)
+        
         # Display controls
         cv2.putText(display, "a=assembly | click=target | s=save | r=reset | q=quit", 
                    (10, display.shape[0] - 10),
@@ -280,7 +331,6 @@ finally:
     
     # Show final plot
     if len(timestamps) > 1:
-        plt.ioff()
         plt.figure(figsize=(12, 6))
         plt.plot(timestamps, distances, 'b-', linewidth=2)
         plt.xlabel('Time (seconds)', fontsize=12)
@@ -292,7 +342,11 @@ finally:
         plot_filename = f"tracking_plot_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
         plt.savefig(plot_filename, dpi=150)
         print(f"✓ Plot saved to {plot_filename}")
-        plt.show()
+        
+        # Show plot without blocking
+        plt.show(block=False)
+        plt.pause(3)  # Show for 3 seconds
+        plt.close()
     
     print("\nTracking complete!")
 
