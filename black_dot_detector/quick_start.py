@@ -105,13 +105,17 @@ def main():
         elif choice == '2':
             print_header("Test Camera Connection")
             
-            if not check_environment():
-                continue
-            
             print("This will list available cameras and show a live preview.")
             print("Press 'q' in the camera window to quit.\n")
             
-            run_command("venv_blackdot/bin/python camera_utils.py", 
+            # Check if venv exists, otherwise use system python
+            if check_environment():
+                python_cmd = "venv_blackdot/bin/python"
+            else:
+                print("⚠️  Virtual environment not found, using system Python")
+                python_cmd = "python3"
+            
+            run_command(f"{python_cmd} camera_utils.py", 
                        "Testing camera")
         
         elif choice == '3':
