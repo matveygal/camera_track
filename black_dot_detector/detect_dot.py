@@ -498,11 +498,8 @@ class DotDetector:
         
         self.camera = RealSenseCamera(
             rgb_resolution=tuple(camera_config['rgb_resolution']),
-            depth_resolution=tuple(camera_config['depth_resolution']),
             framerate=camera_config['framerate'],
-            enable_depth=camera_config['enable_depth'],
-            serial_number=camera_config.get('serial_number') or None,
-            auto_exposure=camera_config['auto_exposure']
+            serial_number=camera_config.get('serial_number') or None
         )
         
         return self.camera.initialize()

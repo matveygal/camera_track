@@ -102,11 +102,8 @@ class DotAnnotator:
         
         self.camera = RealSenseCamera(
             rgb_resolution=tuple(self.camera_config['rgb_resolution']),
-            depth_resolution=tuple(self.camera_config['depth_resolution']),
             framerate=self.camera_config['framerate'],
-            enable_depth=self.camera_config['enable_depth'],
-            serial_number=self.camera_config.get('serial_number') or None,
-            auto_exposure=self.camera_config['auto_exposure']
+            serial_number=self.camera_config.get('serial_number') or None
         )
         
         if not self.camera.initialize():
@@ -129,7 +126,7 @@ class DotAnnotator:
             return None
         
         # Capture frame
-        frame_data = self.camera.capture_frame(align_depth=False)
+        frame_data = self.camera.capture_frame()
         
         if frame_data is None:
             logger.error("Failed to capture frame")
