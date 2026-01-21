@@ -53,15 +53,10 @@ FILTER_WINDOW_SIZE = 10
 distance_buffer = deque(maxlen=FILTER_WINDOW_SIZE)
 
 # Plot settings
-show_plot = True
-plt.ion()
-fig, ax = plt.subplots(figsize=(10, 4))
-fig.canvas.manager.window.wm_geometry("+700+50")
-line, = ax.plot([], [], 'b-', linewidth=2)
-ax.set_xlabel('Time (seconds)')
-ax.set_ylabel('Distance (mm)')
-ax.set_title('Target Point Distance from Camera')
-ax.grid(True)
+show_plot = False  # Disabled by default to avoid GIL conflicts
+fig = None
+ax = None
+line = None
 
 def capture_assembly(frame):
     """Let user select the heart assembly region"""
@@ -125,15 +120,35 @@ def save_data():
 
 def update_plot():
     """Update the live plot"""
-    if len(timestamps) > 1 and show_plot:
-        try:
-            line.set_data(timestamps, distances)
-            ax.relim()
-            ax.autoscale_view()
-            fig.canvas.draw()
-            fig.canvas.flush_events()
-        except:
-            pass  # Ignore plot errors to not crash tracking
+    global fig, ax, line
+    
+    if not show_plot or len(timestamps) < 2:
+        return
+    
+    try:
+        # Initialize plot if needed
+        if fig is None:
+            plt.ion()
+            fig, ax = plt.subplots(figsize=(10, 4))
+            try:
+                fig.canvas.manager.window.wm_geometry("+700+50")
+            except:
+                pass  # Ignore if window positioning fails
+            line, = ax.plot([], [], 'b-', linewidth=2)
+            ax.set_xlabel('Time (seconds)')
+            ax.set_ylabel('Distance (mm)')
+            ax.set_title('Target Point Distance from Camera')
+            ax.grid(True)
+            plt.show(block=False)
+        
+        # Update plot data
+        line.set_data(timestamps, distances)
+        ax.relim()
+        ax.autoscale_view()
+        fig.canvas.draw_idle()  # Use draw_idle instead of draw for thread safety
+        fig.canvas.flush_events()
+    except:
+        pass  # Ignore plot errors to not crash tracking
 
 try:
     # Create camera window and position it on left side
@@ -279,9 +294,15 @@ try:
         elif key == ord('p'):
             show_plot = not show_plot
             if show_plot:
-                plt.show()
+                print("Live plot enabled")
+                update_plot()  # Initialize and show plot
             else:
-                plt.close()
+                print("Live plot disabled")
+                if fig is not None:
+                    plt.close(fig)
+                    fig = None
+                    ax = None
+                    line = None
         elif key == ord('r'):
             # Reset everything
             assembly_template = None
