@@ -117,7 +117,10 @@ def select_reference_frame_and_point(frame):
                 continue
             
             frame = np.asanyarray(color_frame.get_data())
-            gray = cv2.cvtColor(frame,descriptors is not None:
+            frame = np.asanyarray(color_frame.get_data())
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            
+            if tracking and reference_descriptors is not None:
                 # Detect features in current frame
                 current_keypoints, current_descriptors = orb.detectAndCompute(gray, None)
                 
@@ -170,28 +173,35 @@ def select_reference_frame_and_point(frame):
                                        0.7, (0, 0, 255), 2)
                             cv2.putText(frame, f"Matches: {len(good_matches)} ({sum(mask)}/{len(mask)} inliers)", 
                                        (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 
-                                       0.6, (0, 2     (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 
+                                       0.6, (0, 255, 0), 2)
+                        else:
+                            cv2.putText(frame, "NO HOMOGRAPHY - Press 'c' to recapture", 
+                                       (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 
                                        0.6, (0, 0, 255), 2)
                 else:
                     cv2.putText(frame, "NO FEATURES DETECTED - Check lighting/occlusion", 
                                (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 
-                               0.6, (0, 0, 255oid: ({int(centroid[0])}, {int(centroid[1])})", 
-                               (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 
-                               0.5, (255, 0, 0), 2)
+                               0.6, (0, 0, 255), 2)
             else:
                 cv2.putText(frame, "Press 'c' to start tracking", 
                            (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 
                            0.7, (255, 255, 0), 2)
-            
-            # Update old frame
-            old_gray = gray.copy()
             
             # Display controls
             cv2.putText(frame, "c=capture | r=reset | q=quit", 
                        (10, frame.shape[0] - 10),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
             
-            cv2.imshow('Relatiimage, reference_keypoints, reference_descriptors, relative_position, reference_roi = result
+            cv2.imshow('Relative Position Tracking', frame)
+            
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord('q'):
+                break
+            elif key == ord('c'):
+                # Capture reference and point
+                result = select_reference_frame_and_point(frame)
+                if result[0] is not None:
+                    reference_image, reference_keypoints, reference_descriptors, relative_position, reference_roi = result
                     tracking = True
                     print("Tracking started!")
             elif key == ord('r'):
@@ -200,16 +210,7 @@ def select_reference_frame_and_point(frame):
                 reference_keypoints = None
                 reference_descriptors = None
                 relative_position = None
-                reference_roit[0] is not None:
-                    reference_features, relative_position, roi = result
-                    old_gray = gray.copy()
-                    tracking = True
-                    print("Tracking started!")
-            elif key == ord('r'):
-                # Reset
-                reference_features = None
-                relative_position = None
-                old_gray = None
+                reference_roi = None
                 tracking = False
                 print("Tracking reset")
     
