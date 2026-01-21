@@ -69,17 +69,7 @@ class RealSenseCamera:
                 self.config.enable_device(self.serial_number)
                 logger.info(f"Targeting camera with serial: {self.serial_number}")
             
-            # Configure RGB stream
-            self.config.enable_stream(
-                rs.stream.color,
-                self.rgb_resolution[0],
-                self.rgb_resolution[1],
-                rs.format.bgr8,
-                self.framerate
-            )
-            logger.info(f"RGB stream: {self.rgb_resolution[0]}x{self.rgb_resolution[1]} @ {self.framerate}fps")
-            
-            # Configure depth stream if enabled
+            # Configure depth stream first if enabled
             if self.enable_depth:
                 self.config.enable_stream(
                     rs.stream.depth,
@@ -89,6 +79,16 @@ class RealSenseCamera:
                     self.framerate
                 )
                 logger.info(f"Depth stream: {self.depth_resolution[0]}x{self.depth_resolution[1]} @ {self.framerate}fps")
+            
+            # Configure RGB stream
+            self.config.enable_stream(
+                rs.stream.color,
+                self.rgb_resolution[0],
+                self.rgb_resolution[1],
+                rs.format.bgr8,
+                self.framerate
+            )
+            logger.info(f"RGB stream: {self.rgb_resolution[0]}x{self.rgb_resolution[1]} @ {self.framerate}fps")
             
             # Start streaming
             profile = self.pipeline.start(self.config)
