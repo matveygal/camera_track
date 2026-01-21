@@ -8,6 +8,32 @@ import sys
 import subprocess
 from pathlib import Path
 import time
+import platform
+
+
+def get_python_cmd():
+    """Get the correct Python command for this system."""
+    if platform.system() == "Windows":
+        return "python"
+    return "python3"
+
+
+def get_venv_python():
+    """Get the virtual environment Python path if it exists."""
+    venv_dir = Path("venv_blackdot")
+    
+    if not venv_dir.exists():
+        return get_python_cmd()
+    
+    if platform.system() == "Windows":
+        venv_python = venv_dir / "Scripts" / "python.exe"
+    else:
+        venv_python = venv_dir / "bin" / "python"
+    
+    if venv_python.exists():
+        return str(venv_python)
+    
+    return get_python_cmd()
 
 
 def print_header(text):
@@ -100,7 +126,7 @@ def main():
             confirm = input("Continue? (y/n): ").strip().lower()
             
             if confirm == 'y':
-                run_command("python3 install_deps.py", "Installing dependencies")
+                run_command(f"{get_python_cmd()} install_deps.py", "Installing dependencies")
         
         elif choice == '2':
             print_header("Test Camera Connection")
@@ -108,13 +134,7 @@ def main():
             print("This will list available cameras and show a live preview.")
             print("Press 'q' in the camera window to quit.\n")
             
-            # Check if venv exists, otherwise use system python
-            if check_environment():
-                python_cmd = "venv_blackdot/bin/python"
-            else:
-                print("⚠️  Virtual environment not found, using system Python")
-                python_cmd = "python3"
-            
+            python_cmd = get_venv_python()
             run_command(f"{python_cmd} camera_utils.py", 
                        "Testing camera")
         
@@ -142,7 +162,8 @@ def main():
             
             input("\nPress Enter to start...")
             
-            run_command("venv_blackdot/bin/python annotator.py --mode file",
+            python_cmd = get_venv_python()
+            run_command(f"{python_cmd} annotator.py --mode file",
                        "Running annotator")
         
         elif choice == '4':
@@ -160,7 +181,8 @@ def main():
             
             input("\nPress Enter to start...")
             
-            run_command("venv_blackdot/bin/python annotator.py --mode camera",
+            python_cmd = get_venv_python()
+            run_command(f"{python_cmd} annotator.py --mode camera",
                        "Running camera annotator")
         
         elif choice == '5':
@@ -186,7 +208,8 @@ def main():
             confirm = input("\nContinue? (y/n): ").strip().lower()
             
             if confirm == 'y':
-                run_command("venv_blackdot/bin/python train_model.py",
+                python_cmd = get_venv_python()
+                run_command(f"{python_cmd} train_model.py",
                            "Training model")
         
         elif choice == '6':
@@ -208,7 +231,8 @@ def main():
                 print(f"❌ Image not found: {image_path}")
                 continue
             
-            run_command(f"venv_blackdot/bin/python detect_dot.py image --input '{image_path}'",
+            python_cmd = get_venv_python()
+            run_command(f"{python_cmd} detect_dot.py image --input '{image_path}'",
                        "Running detection")
         
         elif choice == '7':
@@ -227,7 +251,8 @@ def main():
             print("This will capture a single frame and detect the dot.")
             input("\nPress Enter to start...")
             
-            run_command("venv_blackdot/bin/python detect_dot.py camera",
+            python_cmd = get_venv_python()
+            run_command(f"{python_cmd} detect_dot.py camera",
                        "Running camera detection")
         
         elif choice == '8':
@@ -250,7 +275,8 @@ def main():
             
             input("\nPress Enter to start...")
             
-            run_command("venv_blackdot/bin/python detect_dot.py live",
+            python_cmd = get_venv_python()
+            run_command(f"{python_cmd} detect_dot.py live",
                        "Running live detection")
         
         elif choice == '9':
@@ -272,7 +298,8 @@ def main():
                 print(f"❌ Directory not found: {images_dir}")
                 continue
             
-            run_command(f"venv_blackdot/bin/python detect_dot.py batch --input '{images_dir}'",
+            python_cmd = get_venv_python()
+            run_command(f"{python_cmd} detect_dot.py batch --input '{images_dir}'",
                        "Running batch detection")
         
         elif choice == 'h':
