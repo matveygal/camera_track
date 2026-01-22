@@ -33,7 +33,7 @@ class HeartTracker:
                  sift_features=1000,
                  match_ratio=0.75,
                  min_matches=8,
-                 constellation_radius=50):
+                 constellation_radius=150):
         """
         Initialize the heart tracker.
         
@@ -507,7 +507,7 @@ def main():
         sift_features=1000,
         match_ratio=0.75,
         min_matches=8,
-        constellation_radius=50
+        constellation_radius=150  # Spread points widely to avoid simultaneous occlusion
     )
     
     print("\n[INFO] Click on the target point on the heart to start tracking")

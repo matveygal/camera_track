@@ -19,7 +19,7 @@ EKF_PROCESS_NOISE = 200.0       # Lower = trust motion model more (smoother, les
 EKF_MEASUREMENT_NOISE = 1.0     # Lower = trust SIFT measurements more (noisier, more responsive)
 
 # Constellation Tracking Parameters
-CONSTELLATION_RADIUS = 50        # Pixels around target to place constellation points
+CONSTELLATION_RADIUS = 150       # Pixels around target to place constellation points
 CONSTELLATION_N_POINTS = 6       # Number of points in constellation
 
 # Occlusion Handling
