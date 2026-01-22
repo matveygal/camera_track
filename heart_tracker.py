@@ -522,16 +522,15 @@ def main():
                     print("[ERROR] Failed to initialize tracking")
                 target_selected = False
             
-            # Track if initialized and not paused
-            if tracker.tracking_initialized and not paused:
-                tracked_pos, confidence, sttrack(frame)
+            # Track if initialized
+            if tracker.tracking_initialized:
+                tracked_pos, confidence, status = tracker.track(frame)
                 vis_frame = tracker.visualize(frame, tracked_pos, confidence, status)
             else:
                 vis_frame = frame.copy()
-                if not tracker.tracking_initialized:
-                    cv2.putText(vis_frame, "Click to select target point", 
-                               (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
-                elif paused:
+                cv2.putText(vis_frame, "Click to select target point", 
+                           (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+            
             # Display
             cv2.imshow('Heart Tracker', vis_frame)
             
@@ -545,10 +544,10 @@ def main():
                 print("\n[INFO] Resetting tracking...")
                 tracker.tracking_initialized = False
                 target_selected = False
-            elif key == ord('p'):
-                paused = not paused
-                print(f"\n[INFO] {'Paused' if paused else 'Resumed'}")
-            elif key == ord('+') or key
+    
+    except KeyboardInterrupt:
+        print("\n[INFO] Interrupted by user")
+    
     finally:
         # Cleanup
         camera.stop()
