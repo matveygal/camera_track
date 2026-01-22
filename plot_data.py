@@ -34,22 +34,9 @@ def plot_csv(filename):
     times = np.array(times)
     distances = np.array(distances)
     
-    # Apply mild smoothing to reduce discrete steps while staying close to original points
-    # Savitzky-Golay with small window smooths transitions without losing sharp changes
-    window = min(11, len(distances) if len(distances) % 2 == 1 else len(distances) - 1)
-    if window >= 5:
-        distances_smooth = savgol_filter(distances, window, 2)
-    else:
-        distances_smooth = distances
-    
-    # High-resolution interpolation for smooth line rendering
-    time_interp = np.linspace(times.min(), times.max(), len(times) * 50)
-    distance_interp = np.interp(time_interp, times, distances_smooth)
-    
-    # Create plot
+    # Plot raw data
     plt.figure(figsize=(12, 6))
-    plt.plot(time_interp, distance_interp, 'b-', linewidth=2, label='Distance')
-    plt.plot(times, distances, 'ro', markersize=2, alpha=0.5, label='Raw measurements')
+    plt.plot(times, distances, 'b-', linewidth=1.5, marker='o', markersize=3, label='Distance')
     plt.xlabel('Time (seconds)', fontsize=12)
     plt.ylabel('Distance (mm)', fontsize=12)
     plt.title(f'Tracking Data: {Path(filename).name}', fontsize=14)
