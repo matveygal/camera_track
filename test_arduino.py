@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
-Test Arduino serial connection by blinking LED.
-Connect Arduino Uno via USB and upload the standard Blink sketch.
+Test Arduino servo control via serial.
+Upload arduino_servo_control.ino to Arduino first.
+Servo should be connected to pin 9.
 """
 
 import serial
@@ -26,7 +27,7 @@ def find_arduino():
     return None
 
 def test_connection():
-    """Test Arduino serial connection."""
+    """Test Arduino servo control."""
     # Find Arduino port
     port = find_arduino()
     
@@ -42,22 +43,31 @@ def test_connection():
         time.sleep(2)  # Wait for Arduino to reset
         
         print(f"Connected to Arduino on {port}")
-        print("Sending test commands...")
         
-        # Send some test data
-        for i in range(5):
-            message = f"Test {i}\n"
-            ser.write(message.encode())
-            print(f"Sent: {message.strip()}")
+        # Wait for ready message
+        if ser.in_waiting > 0:
+            response = ser.readline().decode().strip()
+            print(f"Arduino says: {response}")
+        
+        print("\nSpinning servo through full range...")
+        
+        # Sweep servo from 0 to 180 and back
+        for angle in list(range(0, 181, 15)) + list(range(180, -1, -15)):
+            ser.write(f"{angle}\n".encode())
+            time.sleep(0.3)
             
-            # Read response if available
-            time.sleep(0.5)
+            # Read response
             if ser.in_waiting > 0:
                 response = ser.readline().decode().strip()
-                print(f"Received: {response}")
+                print(response)
+        
+        # Return to center
+        ser.write(b"90\n")
+        time.sleep(0.3)
+        print("\nServo returned to center position")
         
         ser.close()
-        print("\nConnection test complete!")
+        print("Test complete!")
         
     except serial.SerialException as e:
         print(f"Error: {e}")
@@ -67,6 +77,8 @@ def test_connection():
             ser.close()
 
 if __name__ == "__main__":
-    print("Arduino Serial Test")
+    print("Arduino Servo Test")
     print("=" * 50)
+    print("Make sure you've uploaded arduino_servo_control.ino first!")
+    print()
     test_connection()
