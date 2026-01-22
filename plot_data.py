@@ -4,6 +4,9 @@ Plot tracking data from saved CSV files
 """
 import sys
 import csv
+import numpy as np
+from scipy.interpolate import make_interp_spline
+from scipy.signal import savgol_filter
 import matplotlib.pyplot as plt
 from pathlib import Path
 
@@ -27,9 +30,32 @@ def plot_csv(filename):
         print("Error: No data in file")
         return
     
-    # Create plot
+    # Convert to numpy arrays
+    times = np.array(times)
+    distances = np.array(distances)
+    
+    # Create smooth interpolated curve using cubic spline
+    # Generate more points for smoother visualization
+    time_smooth = np.linspace(times.min(), times.max(), len(times) * 10)
+    
+    try:
+        # Cubic spline interpolation for smooth curve
+        spline = make_interp_spline(times, distances, k=3)
+        distance_smooth = spline(time_smooth)
+    except:
+        # Fallback to Savitzky-Golay filter if spline fails
+        window = min(11, len(distances) if len(distances) % 2 == 1 else len(distances) - 1)
+        if window >= 5:
+            distance_smooth = savgol_filter(distances, window, 3)
+            time_smooth = times
+        else:
+            distance_smooth = distances
+            time_smooth = times
+    
+    # Create plot with both raw and smooth data
     plt.figure(figsize=(12, 6))
-    plt.plot(times, distances, 'b-', linewidth=2, label='Distance')
+    plt.plot(times, distances, 'o', alpha=0.3, markersize=3, label='Raw data', color='lightblue')
+    plt.plot(time_smooth, distance_smooth, 'b-', linewidth=2, label='Smoothed')
     plt.xlabel('Time (seconds)', fontsize=12)
     plt.ylabel('Distance (mm)', fontsize=12)
     plt.title(f'Tracking Data: {Path(filename).name}', fontsize=14)
