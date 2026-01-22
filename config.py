@@ -1,6 +1,6 @@
 """
 Configuration file for heart tracking system.
-Adjust these parameters to tune tracking performance for your specific setup.
+Tuned for SIFT + Optical Flow + Kalman smoothing approach.
 """
 
 # Camera Configuration
@@ -8,49 +8,38 @@ CAMERA_WIDTH = 640
 CAMERA_HEIGHT = 480
 CAMERA_FPS = 30
 
-# SIFT Feature Detection Parameters
-SIFT_N_FEATURES = 1000          # Number of SIFT features to detect
-SIFT_MATCH_RATIO = 0.75         # Lowe's ratio test threshold (0.7-0.8 typical)
-MIN_MATCHES_REQUIRED = 8        # Minimum matches for valid tracking
+# SIFT Feature Detection Parameters (for initial detection only)
+SIFT_N_FEATURES = 500           # Number of SIFT features to detect initially
+MIN_TRACKED_FEATURES = 15       # Minimum features to maintain with optical flow
+OPTICAL_FLOW_REDETECT = 10      # Re-detect SIFT when features drop below this
 
 # Extended Kalman Filter Parameters
-# These control the balance between trusting the motion model vs. measurements
-EKF_PROCESS_NOISE = 200.0       # Lower = trust motion model more (smoother, less responsive)
-EKF_MEASUREMENT_NOISE = 1.0     # Lower = trust SIFT measurements more (noisier, more responsive)
+# Tuned for temporal smoothing (reduce flicker)
+EKF_PROCESS_NOISE = 10.0        # Moderate smoothing (trust motion model)
+EKF_MEASUREMENT_NOISE = 20.0    # Reduce trust in individual measurements for stability
 
 # Constellation Tracking Parameters
 CONSTELLATION_RADIUS = 150       # Pixels around target to place constellation points
-CONSTELLATION_N_POINTS = 6       # Number of points in constellation
-
-# Occlusion Handling
-MAX_FRAMES_WITHOUT_MATCH = 30    # Maximum frames to predict before declaring tracking lost
-
-# Visualization
-DISPLAY_UNCERTAINTY = True       # Show uncertainty ellipse
-DISPLAY_VELOCITY = True          # Show velocity vector
-DISPLAY_CONSTELLATION = True     # Show constellation points
-CROSSHAIR_SIZE = 20             # Size of tracking crosshair
 
 # Performance
 FPS_BUFFER_SIZE = 30            # Number of frames to average for FPS calculation
 
-# Tuning Guide:
-# 
-# For STABLE tracking (minimize jitter):
-#   - Increase EKF_PROCESS_NOISE (trust motion model more)
-#   - Decrease EKF_MEASUREMENT_NOISE (trust measurements less)
-#   - Increase CONSTELLATION_RADIUS (more spatial averaging)
+# Tuning Guide for New System:
 #
-# For RESPONSIVE tracking (follow fast movements):
-#   - Decrease EKF_PROCESS_NOISE (trust motion model less)
-#   - Increase EKF_MEASUREMENT_NOISE (trust measurements more)
-#   - Increase MIN_MATCHES_REQUIRED (ensure quality matches)
+# For SMOOTHER tracking (less flicker):
+#   - Increase EKF_PROCESS_NOISE (more temporal averaging)
+#   - Increase EKF_MEASUREMENT_NOISE (trust individual frames less)
+#   - Increase MIN_TRACKED_FEATURES (maintain more features)
 #
-# For OCCLUSION handling:
-#   - Increase CONSTELLATION_N_POINTS (more redundancy)
-#   - Increase MAX_FRAMES_WITHOUT_MATCH (longer prediction window)
-#   - Adjust CONSTELLATION_RADIUS based on typical occlusion size
+# For MORE RESPONSIVE tracking:
+#   - Decrease EKF_PROCESS_NOISE (follow measurements closer)
+#   - Decrease EKF_MEASUREMENT_NOISE (trust optical flow more)
 #
-# For ILLUMINATION changes:
-#   - Increase SIFT_N_FEATURES (more features to match)
-#   - Adjust SIFT_MATCH_RATIO (lower = stricter matching)
+# If losing features too quickly:
+#   - Increase SIFT_N_FEATURES (detect more initially)
+#   - Increase OPTICAL_FLOW_REDETECT (re-detect earlier)
+#   - Decrease MIN_TRACKED_FEATURES (be more lenient)
+#
+# If tracking drifts:
+#   - Decrease OPTICAL_FLOW_REDETECT (re-detect more often)
+#   - Increase SIFT_N_FEATURES (better initial detection)

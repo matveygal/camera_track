@@ -1,6 +1,7 @@
 """
 Extended Kalman Filter for tracking 2D point motion with velocity estimation.
 Models the quasi-periodic motion of the heart surface.
+Tuned for temporal smoothing to reduce flicker.
 """
 
 import numpy as np
@@ -14,18 +15,17 @@ class ExtendedKalmanFilter:
         - x, y: 2D position in image coordinates
         - vx, vy: velocity components
     
-    This filter is designed to track and predict the motion of a point on
-    a moving surface (e.g., beating heart) while smoothing measurement noise.
+    Tuned for smoothing optical flow measurements to eliminate flicker.
     """
     
-    def __init__(self, initial_position, process_noise=200.0, measurement_noise=1.0, dt=0.033):
+    def __init__(self, initial_position, process_noise=10.0, measurement_noise=20.0, dt=0.033):
         """
         Initialize the Extended Kalman Filter.
         
         Args:
             initial_position: Initial [x, y] position
-            process_noise: Process noise coefficient (how much we trust the motion model)
-            measurement_noise: Measurement noise coefficient (how much we trust observations)
+            process_noise: Process noise coefficient (higher = more smoothing)
+            measurement_noise: Measurement noise coefficient (higher = less trust in measurements)
             dt: Time step between frames (default ~30 fps)
         """
         self.dt = dt
@@ -38,12 +38,10 @@ class ExtendedKalmanFilter:
             0.0   # Initial velocity y
         ], dtype=np.float32)
         
-        # State covariance matrix (uncertainty in our estimate)
-        # Start with lower uncertainty = more confidence in initial position
+        # State covariance matrix (start with lower uncertainty)
         self.P = np.eye(4, dtype=np.float32) * 10.0
         
         # Process noise covariance matrix
-        # Models uncertainty in the motion model
         q = process_noise
         self.Q = np.array([
             [q * dt**4 / 4, 0, q * dt**3 / 2, 0],
@@ -53,7 +51,6 @@ class ExtendedKalmanFilter:
         ], dtype=np.float32)
         
         # Measurement noise covariance matrix
-        # Models uncertainty in SIFT detections
         r = measurement_noise
         self.R = np.array([
             [r, 0],
@@ -66,9 +63,9 @@ class ExtendedKalmanFilter:
             [0, 1, 0, 0]
         ], dtype=np.float32)
         
-        # Track number of prediction-only steps (for occlusion handling)
+        # Track number of prediction-only steps
         self.prediction_only_steps = 0
-        self.max_prediction_steps = 30  # Maximum frames to predict without measurement
+        self.max_prediction_steps = 30
         
     def predict(self):
         """
@@ -95,13 +92,12 @@ class ExtendedKalmanFilter:
     
     def update(self, measurement):
         """
-        Update step: Incorporate new measurement (SIFT detection).
+        Update step: Incorporate new measurement (optical flow detection).
         
         Args:
-            measurement: Observed [x, y] position from SIFT matching
+            measurement: Observed [x, y] position from optical flow
         """
         if measurement is None:
-            # No measurement available, just predict
             return self.predict()
         
         # Convert measurement to numpy array
@@ -141,25 +137,15 @@ class ExtendedKalmanFilter:
         return self.x.copy()
     
     def is_tracking_lost(self):
-        """
-        Check if tracking is likely lost based on prediction-only duration.
-        """
+        """Check if tracking is likely lost."""
         return self.prediction_only_steps > self.max_prediction_steps
     
     def get_uncertainty(self):
-        """
-        Get position uncertainty (standard deviation in x and y).
-        """
+        """Get position uncertainty (standard deviation in x and y)."""
         return np.sqrt(np.diag(self.P)[:2])
     
     def adjust_noise_parameters(self, process_noise=None, measurement_noise=None):
-        """
-        Dynamically adjust noise parameters for tuning.
-        
-        Args:
-            process_noise: New process noise coefficient
-            measurement_noise: New measurement noise coefficient
-        """
+        """Dynamically adjust noise parameters."""
         if process_noise is not None:
             q = process_noise
             dt = self.dt

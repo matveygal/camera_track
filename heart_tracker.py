@@ -1,17 +1,19 @@
 """
-Heart Surface Tracking System using SIFT + Extended Kalman Filter
+Heart Surface Tracking System using Hybrid SIFT + Optical Flow + Kalman Filter
 
 This system tracks a specific point on the heart surface using:
-1. SIFT feature detection for robust feature matching under illumination changes
-2. Extended Kalman Filter for motion prediction and noise filtering
-3. Constellation tracking for occlusion handling
+1. SIFT for initial robust feature detection (once)
+2. Lucas-Kanade optical flow for smooth frame-to-frame tracking
+3. Extended Kalman Filter for temporal smoothing
 4. Intel RealSense 435i RGB camera
 
-Features:
-- Illumination invariance via SIFT
-- Occlusion handling through motion prediction
-- Noise suppression via Kalman filtering
-- Multi-point constellation tracking for redundancy
+Architecture:
+- Detect SIFT features ONCE at initialization
+- Track those specific features using Lucas-Kanade optical flow
+- Use Kalman filter to smooth the tracked position
+- Re-detect SIFT only when optical flow loses too many features
+
+This eliminates flickering by maintaining feature correspondence across frames.
 """
 
 import cv2
@@ -24,49 +26,31 @@ from collections import deque
 
 class HeartTracker:
     """
-    Main tracking system for heart surface point tracking.
+    Hybrid tracking system: SIFT initialization + Optical Flow tracking + Kalman smoothing.
     """
     
     def __init__(self, 
-                 process_noise=200.0, 
-                 measurement_noise=1.0,
-                 sift_features=1000,
-                 match_ratio=0.75,
-                 min_matches=8,
-                 constellation_radius=150):
+                 process_noise=10.0,    # Moderate trust in motion model for smoothing
+                 measurement_noise=20.0, # Lower trust in individual measurements
+                 sift_features=500,
+                 min_tracked_features=15,
+                 constellation_radius=150,
+                 optical_flow_redetect_threshold=10):
         """
-        Initialize the heart tracker.
+        Initialize the hybrid tracker.
         
         Args:
-            process_noise: EKF process noise (trust in motion model)
-            measurement_noise: EKF measurement noise (trust in SIFT detections)
-            sift_features: Number of SIFT features to detect
-            match_ratio: Lowe's ratio test threshold for SIFT matching
-            match_ratio: Lowe's ratio test threshold for SIFT matching
-            min_matches: Minimum number of matches to consider tracking valid
-            constellation_radius: Radius around target point for constellation tracking
+            process_noise: EKF process noise (higher = smoother)
+            measurement_noise: EKF measurement noise (higher = less responsive to noise)
+            sift_features: Number of SIFT features to detect initially
+            min_tracked_features: Minimum features to maintain before re-detection
+            constellation_radius: Radius for constellation points
+            optical_flow_redetect_threshold: Re-detect SIFT when features drop below this
         """
-        # SIFT detector configuration
+        # SIFT for initial detection only
         self.sift = cv2.SIFT_create(nfeatures=sift_features)
-        self.matcher = cv2.BFMatcher(cv2.NORM_L2, crossCheck=False)
-        self.match_ratio = match_ratio
-        self.min_matches = min_matches
-        self.constellation_radius = constellation_radius
-        
-        # Tracking state
-        self.ekf = None
-        self.reference_frame = None
-        self.reference_keypoints = None
-        self.reference_descriptors = None
-        self.target_point = None
-        self.tracking_initialized = False
-        
-        # Optical flow tracking
-        self.prev_gray = None
-        self.tracked_points = None  # Points being tracked with optical flow
-        self.track_ids = []  # IDs for maintaining correspondence
-        self.frames_since_sift_validation = 0
-        self.sift_validation_interval = 30  # Re-validate with SIFT every N frames
+        self.min_tracked_features = min_tracked_features
+        self.optical_flow_redetect_threshold = optical_flow_redetect_threshold
         
         # Lucas-Kanade optical flow parameters
         self.lk_params = dict(
@@ -75,406 +59,215 @@ class HeartTracker:
             criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 30, 0.01)
         )
         
-        # Good features to track parameters
-        self.feature_params = dict(
-            maxCorners=30,
-            qualityLevel=0.01,
-            minDistance=20,
-            blockSize=7
-        )
+        # Tracking state
+        self.ekf = None
+        self.prev_gray = None
+        self.tracked_points = None  # Points we're tracking with optical flow
+        self.initial_target = None  # Initial target position
+        self.target_feature_idx = None  # Index of the feature closest to target
+        self.tracking_initialized = False
         
-        # Constellation tracking (multiple points around target)
-        self.constellation_ekfs = []
-        self.constellation_points = []
+        # Constellation tracking
+        self.constellation_radius = constellation_radius
+        self.constellation_initial = []  # Initial constellation positions
+        self.constellation_indices = []  # Indices of constellation features
         
         # Performance metrics
         self.fps_buffer = deque(maxlen=30)
         self.last_frame_time = time.time()
         
-        # Occlusion detection
-        self.frames_without_match = 0
-        self.max_frames_without_match = 30
+        # Redetection tracking
+        self.frames_since_redetection = 0
+        self.redetection_interval = 300  # Force redetection every 300 frames
         
-        # Store parameters for EKF initialization
+        # Store parameters
         self.process_noise = process_noise
         self.measurement_noise = measurement_noise
-        
-        print(f"[INFO] HeartTracker initialized: SIFT + Optical Flow hybrid mode")
-        print(f"[INFO] Optical flow for smooth frame-to-frame tracking")
-        print(f"[INFO] SIFT validation every {self.sift_validation_interval} frames")
+        self.constellation_radius = constellation_radius
         
     def initialize_tracking(self, frame, target_point):
         """
-        Initialize tracking by selecting a target point and extracting features.
+        Initialize tracking: detect SIFT features once, set up optical flow tracking.
         
         Args:
             frame: Initial RGB frame
             target_point: (x, y) tuple of the target point to track
         """
-        self.target_point = np.array(target_point, dtype=np.float32)
-        self.reference_frame = frame.copy()
-        
-        # Detect SIFT features in reference frame
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        self.reference_keypoints, self.reference_descriptors = self.sift.detectAndCompute(gray, None)
-        
-        if self.reference_descriptors is None or len(self.reference_keypoints) < self.min_matches:
-            print(f"[WARNING] Not enough features detected: {len(self.reference_keypoints) if self.reference_keypoints else 0}")
-            return False
-        
-        # Initialize main EKF at target point
-        self.ekf = ExtendedKalmanFilter(
-            initial_position=target_point,
-            process_noise=10.0,
-            measurement_noise=5.0
-        )
-        
-        # Initialize optical flow tracking points around target
-        # Find good corners near the target point
+        self.initial_target = np.array(target_point, dtype=np.float32)
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         self.prev_gray = gray.copy()
         
-        # Create a mask to only detect features near the target
-        mask = np.zeros_like(gray)
-        cv2.circle(mask, (int(target_point[0]), int(target_point[1])), 100, 255, -1)
+        # Detect SIFT features ONCE
+        keypoints, descriptors = self.sift.detectAndCompute(gray, None)
         
-        # Detect good features to track
-        corners = cv2.goodFeaturesToTrack(gray, mask=mask, **self.feature_params)
+        if keypoints is None or len(keypoints) < self.min_tracked_features:
+            print(f"[ERROR] Not enough features: {len(keypoints) if keypoints else 0}")
+            return False
         
-        if corners is not None:
-            self.tracked_points = corners
-            self.track_ids = list(range(len(corners)))
-            print(f"[INFO] Initialized {len(corners)} optical flow tracking points")
-        else:
-            self.tracked_points = np.array([[target_point]], dtype=np.float32)
-            self.track_ids = [0]
-            print(f"[WARNING] No good features found, tracking target point directly")
+        # Convert keypoints to array of points for optical flow
+        self.tracked_points = np.array([kp.pt for kp in keypoints], dtype=np.float32).reshape(-1, 1, 2)
         
-        # Create constellation of tracking points around target
+        # Find the feature closest to the target point
+        distances = np.linalg.norm(self.tracked_points.reshape(-1, 2) - target_point, axis=1)
+        self.target_feature_idx = np.argmin(distances)
+        
+        # Initialize constellation: find features around the target
         self._initialize_constellation(target_point)
         
-        self.tracking_initialized = True
-        self.frames_without_match = 0
-        self.frames_since_sift_validation = 0
+        # Initialize EKF at target point with smoothing parameters
+        self.ekf = ExtendedKalmanFilter(
+            initial_position=target_point,
+            process_noise=self.process_noise,
+            measurement_noise=self.measurement_noise
+        )
         
-        print(f"[INFO] Tracking initialized at point ({target_point[0]:.1f}, {target_point[1]:.1f})")
-        print(f"[INFO] Detected {len(self.reference_keypoints)} SIFT features")
-        print(f"[INFO] Constellation: {len(self.constellation_points)} auxiliary points")
+        self.tracking_initialized = True
+        self.frames_since_redetection = 0
+        
+        print(f"[INFO] Tracking initialized")
+        print(f"[INFO] Tracking {len(self.tracked_points)} features with optical flow")
+        print(f"[INFO] Target feature index: {self.target_feature_idx}")
+        print(f"[INFO] Constellation: {len(self.constellation_indices)} points")
         
         return True
     
-    def _initialize_constellation(self, center_point):
+    def _initialize_constellation(self, target_point):
         """
-        Initialize constellation of tracking points around the target.
-        Provides redundancy for occlusion handling.
+        Find features in a ring around the target for constellation tracking.
         """
-        self.constellation_points = []
-        self.constellation_ekfs = []
+        points = self.tracked_points.reshape(-1, 2)
+        distances = np.linalg.norm(points - target_point, axis=1)
         
-        # Create points in a circular pattern around target
-        num_constellation_points = 6
-        for i in range(num_constellation_points):
-            angle = 2 * np.pi * i / num_constellation_points
-         track_with_optical_flow(self, frame):
-        """
-        Track points using Lucas-Kanade optical flow.
-        Much smoother and faster than SIFT matching.
+        # Find features within the constellation radius
+        in_radius = (distances < self.constellation_radius) & (distances > 30)
+        self.constellation_indices = np.where(in_radius)[0].tolist()
         
+        # Keep closest 6-8 constellation points
+        if len(self.constellation_indices) > 8:
+            constellation_distances = distances[self.constellation_indices]
+            sorted_indices = np.argsort(constellation_distances)[:8]
+            self.constellation_indices = [self.constellation_indices[i] for i in sorted_indices]
+        
+        # Store initial constellation positions
+        self.constellation_initial = points[self.constellation_indices].copy()
+    
+    def _redetect_features(self, frame):
+        """
+        Re-detect SIFT features when optical flow loses too many tracks.
+        Maintains correspondence with original target.
+        """
+        print("[INFO] Re-detecting SIFT features...")
+        
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        keypoints, descriptors = self.sift.detectAndCompute(gray, None)
+        
+        if keypoints is None or len(keypoints) < self.min_tracked_features:
+            print("[WARNING] Re-detection failed, continuing with prediction")
+            return False
+        
+        # Reset tracked points
+        self.tracked_points = np.array([kp.pt for kp in keypoints], dtype=np.float32).reshape(-1, 1, 2)
+        self.prev_gray = gray.copy()
+        
+        # Find new target feature (closest to current EKF estimate)
+        current_estimate = self.ekf.get_position()
+        distances = np.linalg.norm(self.tracked_points.reshape(-1, 2) - current_estimate, axis=1)
+        self.target_feature_idx = np.argmin(distances)
+        
+        # Re-initialize constellation
+        self._initialize_constellation(current_estimate)
+        
+        self.frames_since_redetection = 0
+        print(f"[INFO] Re-detected {len(self.tracked_points)} features")
+        
+        return True
+    
+    
+    def track(self, frame):
+        """
+        Track using Lucas-Kanade optical flow + Kalman filter smoothing.
+        
+        Args:
+            frame: Current RGB frame
+            
         Returns:
-            estimated_position: (x, y) or None if tracking failed
-            n_tracked: Number of successfully tracked points
+            tracked_position: (x, y) tuple of smoothed tracked point
+            confidence: Tracking confidence (0.0 to 1.0)
+            status: Tracking status string
         """
+        if not self.tracking_initialized:
+            return None, 0.0, "Not initialized"
+        
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         
-        if self.tracked_points is None or len(self.tracked_points) == 0:
-            return None, 0
-        
-        # Calculate optical flow
+        # Track features using Lucas-Kanade optical flow
         new_points, status, error = cv2.calcOpticalFlowPyrLK(
             self.prev_gray, gray, self.tracked_points, None, **self.lk_params
         )
         
-        if new_points is None:
-            return None, 0
+        # Select good points (successfully tracked)
+        if new_points is not None and status is not None:
+            good_new = new_points[status.flatten() == 1]
+            good_old = self.tracked_points[status.flatten() == 1]
+            status_bool = status.flatten() == 1
+        else:
+            good_new = np.array([])
+            good_old = np.array([])
+            status_bool = np.array([])
         
-        # Select good points
-        good_new = new_points[status == 1]
-        good_old = self.tracked_points[status == 1]
+        num_tracked = len(good_new)
+        self.frames_since_redetection += 1
         
-        if len(good_new) < 4:
-            return None, 0
-        
-        # Estimate transformation from old to new points
-        try:
-            # Use affine transformation for robust motion estimation
-            transform_matrix, inliers = cv2.estimateAffinePartial2D(
-                good_old, good_new, method=cv2.RANSAC, ransacReprojThreshold=3.0
-            )
+        # Check if we need to re-detect features
+        if (num_tracked < self.optical_flow_redetect_threshold or 
+            self.frames_since_redetection > self.redetection_interval):
             
-            if transform_matrix is None:
-                return None, 0
-            
-            # Transform target point using the estimated motion
-            target_homogeneous = np.array([[self.target_point[0], self.target_point[1], 1.0]])
-            transformed = (transform_matrix @ target_homogeneous.T).T
-            estimated_position = transformed[0, :2]
-            
-         match_features(self, frame
-            self.tracked_points = good_new.reshape(-1, 1, 2)
-            self.prev_gray = gray.copy()
-            
-            # Count inliers
-            n_tracked = np.sum(inliers) if inliers is not None else len(good_new)
-            
-            return estimated_position, n_tracked
-            
-        except Exception as e:
-            print(f"[WARNING] Optical flow estimation failed: {e}")
-            self.prev_gray = gray.copy()
-            return None, 0
-    
-    def _validate_with_sift(self, frame):
-        """
-        Periodically validate optical flow tracking with SIFT matching.
-        Prevents drift accumulation.
-        
-        Returns:
-            validated_position: (x, y) or None if validation failed
-        """
-        # Match features using SIFT
-        good_matches, current_keypoints = self._match_features(frame)
-        
-        if len(good_matches) < self.min_matches:
-            return None
-        
-        # Estimate position using SIFT
-        estimated_position = self._estimate_target_position(good_matches, current_keypoints)
-        
-        if estimated_position is None:
-            return None
-        
-        # Reinitialize optical flow tracking points
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        mask = np.zeros_like(gray)
-        cv2.circle(mask, (int(estimated_position[0]), int(estimated_position[1])), 100, 255, -1)
-        
-        corners = cv2.goodFeaturesToTrack(gray, mask=mask, **self.feature_params)
-        
-        if corners is not None:
-            self.tracked_points = corners
-            self.track_ids = list(range(len(corners)))
-            print(f"[INFO] SIFT validation: reinitialized {len(corners)} tracking points")
-        
-        self.prev_gray = gray.copy()
-        
-        return estimated_positiontion_radius * np.cos(angle)
-            offset_y = self.constellation_radius * np.sin(angle)
-            
-            constellation_point = np.array([
-                center_point[0] + offset_x,
-                center_point[1] + offset_y
-            ], dtype=np.float32)
-            
-            # Create EKF for this constellation point
-            ekf = ExtendedKalmanFilter(
-                initial_position=constellation_point,
-                process_noise=self.process_noise,
-                measurement_noise=self.measurement_noise
-            )
-            
-            self.constellation_points.append(constellation_point)
-            self.constellation_ekfs.append(ekf)
-    
-    def _match_features(self, frame):
-        """
-        Match SIFT features between reference frame and current frame.
-        
-        Returns:
-            good_matches: List of good matches
-            current_keypoints: Keypoints in current frame
-        """
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        current_keypoints, current_descriptors = self.sift.detectAndCompute(gray, None)
-        
-        if current_descriptors is None:
-            return [], current_keypoints
-        
-        # Match features using KNN
-        matches = self.matcher.knnMatch(self.reference_descriptors, current_descriptors, k=2)
-        
-        # Apply Lowe's ratio test for robust matching
-        good_matches = []
-        for match_pair in matches:
-            if len(match_pair) == 2:
-                m, n = match_pair
-                if m.distance < self.match_ra using hybrid SIFT + Optical Flow.
-        
-        Args:
-            frame: Current RGB frame
-            
-        Returns:
-            tracked_position: (x, y) tuple of tracked point
-            confidence: Tracking confidence (0.0 to 1.0)
-            status: Tracking status string
-        """
-        if not self.tracking_initialized:
-            return None, 0.0, "Not initialized"
-        
-        self.frames_since_sift_validation += 1
-        
-        # Decide whether to use optical flow or SIFT validation
-        if self.frames_since_sift_validation >= self.sift_validation_interval:
-            # Periodic SIFT validation to prevent drift
-            estimated_position = self._validate_with_sift(frame)
-            self.frames_since_sift_validation = 0
-            
-            if estimated_position is not None:
-                tracked_position = self.ekf.update(estimated_position)
-                confidence = 0.95
-                status = "SIFT validation"
-                self.frames_without_match = 0
-            else:
-                # Validation failed, continue with prediction
+            if self._redetect_features(frame):
+                # Successfully re-detected, continue with prediction for this frame
                 tracked_position = self.ekf.predict()
                 confidence = 0.5
-                status = "Validation failed, predicting"
-                self.frames_without_match += 1
-        else:
-            # Use optical flow for smooth frame-to-frame tracking
-            estimated_position, n_tracked = self._track_with_optical_flow(frame)
-            
-            if estimated_position is not None and n_tracked >= 4:
-                # Good optical flow tracking
-                tracked_position = self.ekf.update(estimated_position)
-                confidence = min(1.0, n_tracked / 15.0)
-                status = f"Optical Flow ({n_tracked} points)"
-                self.frames_without_match = 0
+                status_str = "Re-detecting features"
             else:
-                # Optical flow failed, use prediction
+                # Re-detection failed, use pure prediction
                 tracked_position = self.ekf.predict()
-                self.frames_without_match += 1
+                confidence = 0.3
+                status_str = "Prediction only (re-detection failed)"
+        
+        elif num_tracked >= self.min_tracked_features:
+            # Good tracking: update tracked points and get target position
+            self.tracked_points = good_new.reshape(-1, 1, 2)
+            
+            # Update feature indices after filtering
+            if self.target_feature_idx < len(status_bool):
+                target_still_tracked = status_bool[self.target_feature_idx]
                 
-                if self.frames_without_match < 5:
-                    confidence = 0.7
-                    status = "Predicting (short loss)"
+                if target_still_tracked:
+                    # Calculate new index in filtered array
+                    new_target_idx = np.sum(status_bool[:self.target_feature_idx + 1]) - 1
+                    target_position = good_new[new_target_idx]
                 else:
-                    # Try constellation recovery
-                    recovered_position = self._recover_from_constellation()
-                    
-                    if recovered_position is not None:
-                        tracked_position = self.ekf.update(recovered_position)
-                        confidence = 0.5
-                        status = f"Constellation recovery"
-                    else:
-                        confidence = max(0.1, 0.8 - self.frames_without_match * 0.05)
-            # Calculate the offset from initial target to current tracked position
-        offset = tracked_position - self.target_point
-        
-        # Update each constellation point by applying the same offset
-        for i, (initial_point, ekf) in enumerate(zip(self.constellation_points, self.constellation_ekfs)):
-            # New position maintains the same geometric relationship
-            new_position = initial_point + offset
-            # Update EKF directly (for velocity estimation and occlusion prediction)
-            ekf.update(new_position)
-    
-    def _recover_from_constellation(self):
-        """
-        Attempt to recover target position from constellation when primary tracking fails.
-        Uses the geometric relationship between constellation and target.
-        
-        Returns:
-            recovered_position: (x, y) or None if recovery failed
-        """
-        # Get current constellation positions from their EKFs
-        constellation_current = [ekf.get_position() for ekf in self.constellation_ekfs]
-        
-        # Calculate centroid of constellation
-        centroid = np.mean(constellation_current, axis=0)
-        
-        # The target should be at the centroid (constellation is arranged around it)
-        return centroid
-    
-    def track(self, frame):
-        """
-        Track the target point in a new frame.
-        
-        Args:
-            frame: Current RGB frame
-            
-        Returns:
-            tracked_position: (x, y) tuple of tracked point
-            confidence: Tracking confidence (0.0 to 1.0)
-            status: Tracking status string
-        """
-        if not self.tracking_initialized:
-            return None, 0.0, "Not initialized"
-        
-        # Match features
-        good_matches, current_keypoints = self._match_features(frame)
-        
-        # Estimate target position from SIFT matches
-        estimated_position = self._estimate_target_position(good_matches, current_keypoints)
-        
-        # Determine tracking status and update EKF
-        tracked_position = None
-        
-        if estimated_position is not None and len(good_matches) >= self.min_matches:
-            # Adaptive filtering: with many good matches, trust measurement almost completely
-            # With fewer matches, use more filtering
-            match_quality = len(good_matches) / (self.min_matches * 3)
-            
-            if len(good_matches) >= self.min_matches * 2:
-                # Excellent tracking: use measurement almost directly (95% measurement)
-                tracked_position = 0.95 * estimated_position + 0.05 * self.ekf.get_position()
-                self.ekf.update(estimated_position)  # Still update filter for velocity estimation
-                status = f"Tracking [EXCELLENT] ({len(good_matches)} matches)"
-                confidence = 1.0
+                    # Target feature lost, use constellation centroid
+                    target_position = self._estimate_from_constellation(good_new, status_bool)
             else:
-                # Good tracking: use standard EKF update
-                tracked_position = self.ekf.update(estimated_position)
-                status = f"Tracking ({len(good_matches)} matches)"
-                confidence = min(1.0, match_quality)
+                # Target index out of bounds, use constellation
+                target_position = self._estimate_from_constellation(good_new, status_bool)
             
-            self.frames_without_match = 0
-            self.initialization_frames += 1
+            # Update Kalman filter with optical flow measurement
+            tracked_position = self.ekf.update(target_position)
+            confidence = min(1.0, num_tracked / 50.0)
+            status_str = f"Tracking ({num_tracked} features)"
             
+            # Update constellation indices
+            self._update_constellation_indices(status_bool)
+        
         else:
-            # No direct measurement: use prediction
-            self.frames_without_match += 1
-            
-            if self.frames_without_match < 5:
-                # Short occlusion: trust EKF prediction
-                tracked_position = self.ekf.predict()
-                confidence = 0.7
-                status = "Predicting (short occlusion)"
-                
-            else:
-               tracked optical flow points
-        if self.tracked_points is not None:
-            for point in self.tracked_points:
-                px, py = point.ravel()
-                cv2.circle(vis_frame, (int(px), int(py)), 3, (255, 200, 0), -1)  # Cyan dots
+            # Too few features: use EKF prediction
+            tracked_position = self.ekf.predict()
+            confidence = 0.4
+            status_str = f"Predicting ({num_tracked} features remaining)"
         
-        # Draw  # Longer occlusion: try constellation recovery
-                recovered_position = self._recover_from_constellation()
-                
-                if recovered_position is not None:
-                    tracked_position = self.ekf.update(recovered_position)
-                    confidence = 0.5
-                    status = f"Constellation recovery ({self.frames_without_match} frames)"
-                else:
-                    # Pure prediction
-                    tracked_position = self.ekf.predict()
-                    confidence = max(0.1, 0.8 - self.frames_without_match * 0.05)
-                    status = f"Pure prediction ({self.frames_without_match} frames)"
-        
-        # Update constellation to follow tracked position
-        self._update_constellation(tracked_position)
-        
-        # Check if tracking is lost
-        if self.ekf.is_tracking_lost():
-            confidence = 0.0
-            status = "Tracking lost"
+        # Update previous frame
+        self.prev_gray = gray.copy()
         
         # Update FPS
         current_time = time.time()
@@ -482,7 +275,43 @@ class HeartTracker:
         self.fps_buffer.append(fps)
         self.last_frame_time = current_time
         
-        return tracked_position, confidence, status
+        return tracked_position, confidence, status_str
+    
+    def _estimate_from_constellation(self, good_points, status_bool):
+        """
+        Estimate target position from constellation when direct tracking fails.
+        """
+        if len(self.constellation_indices) == 0:
+            # No constellation, use centroid of all points
+            return np.mean(good_points, axis=0)
+        
+        # Find which constellation features are still tracked
+        tracked_constellation = []
+        for idx in self.constellation_indices:
+            if idx < len(status_bool) and status_bool[idx]:
+                new_idx = np.sum(status_bool[:idx + 1]) - 1
+                if new_idx < len(good_points):
+                    tracked_constellation.append(new_idx)
+        
+        if len(tracked_constellation) >= 3:
+            # Use constellation centroid
+            constellation_points = good_points[tracked_constellation]
+            return np.mean(constellation_points, axis=0)
+        else:
+            # Fall back to all points centroid
+            return np.mean(good_points, axis=0)
+    
+    def _update_constellation_indices(self, status_bool):
+        """
+        Update constellation feature indices after optical flow filtering.
+        """
+        new_constellation = []
+        for idx in self.constellation_indices:
+            if idx < len(status_bool) and status_bool[idx]:
+                # Calculate new index in filtered array
+                new_idx = np.sum(status_bool[:idx + 1]) - 1
+                new_constellation.append(new_idx)
+        self.constellation_indices = new_constellation
     
     def get_fps(self):
         """Get average FPS over recent frames."""
@@ -493,6 +322,7 @@ class HeartTracker:
         if self.ekf is None:
             return np.array([0.0, 0.0])
         return self.ekf.get_velocity()
+    
     
     def visualize(self, frame, tracked_position, confidence, status):
         """
@@ -516,16 +346,28 @@ class HeartTracker:
         
         # Color based on confidence (red = low, green = high)
         color = (
-            int(255 * (1 - confidence)),  # Blue
+            int(128 * (1 - confidence)),   # Blue
             int(255 * confidence),          # Green
-            int(128 * confidence)           # Red
+            int(255 * (1 - confidence))    # Red
         )
+        
+        # Draw tracked features (optical flow points)
+        if self.tracked_points is not None:
+            for point in self.tracked_points.reshape(-1, 2):
+                cv2.circle(vis_frame, tuple(point.astype(int)), 2, (255, 200, 0), -1)
+        
+        # Highlight constellation points
+        if self.constellation_indices:
+            for idx in self.constellation_indices:
+                if idx < len(self.tracked_points):
+                    pt = self.tracked_points[idx][0]
+                    cv2.circle(vis_frame, tuple(pt.astype(int)), 5, (255, 128, 0), 2)
         
         # Draw crosshair at tracked position
         size = 20
-        cv2.line(vis_frame, (x - size, y), (x + size, y), color, 2)
-        cv2.line(vis_frame, (x, y - size), (x, y + size), color, 2)
-        cv2.circle(vis_frame, (x, y), 10, color, 2)
+        cv2.line(vis_frame, (x - size, y), (x + size, y), color, 3)
+        cv2.line(vis_frame, (x, y - size), (x, y + size), color, 3)
+        cv2.circle(vis_frame, (x, y), 12, color, 3)
         
         # Draw velocity vector
         velocity = self.get_velocity()
@@ -533,24 +375,21 @@ class HeartTracker:
         vel_end = (int(x + velocity[0] * vel_scale), int(y + velocity[1] * vel_scale))
         cv2.arrowedLine(vis_frame, (x, y), vel_end, (0, 255, 255), 2, tipLength=0.3)
         
-        # Draw constellation points
-        for ekf in self.constellation_ekfs:
-            pos = ekf.get_position()
-            cv2.circle(vis_frame, (int(pos[0]), int(pos[1])), 5, (255, 128, 0), -1)
-        
-        # Draw uncertainty ellipse
-        if self.ekf is not None:
-            uncertainty = self.ekf.get_uncertainty()
-            axes = (int(uncertainty[0] * 2), int(uncertainty[1] * 2))
-            cv2.ellipse(vis_frame, (x, y), axes, 0, 0, 360, (255, 255, 0), 1)
-        
-        # Draw status informatiybrid SIFT + Optical Flow
-    tracker = HeartTracker(
-        process_noise=10.0,    # More smoothing for optical flow
-        measurement_noise=5.0, # Optical flow is already smooth 255, 255), 2)
-        cv2.putText(vis_frame, f"Position: ({x}, {y})", (10, 90), font, 0.6, (255, 255, 255), 2)
-        cv2.putText(vis_frame, f"Velocity: ({velocity[0]:.1f}, {velocity[1]:.1f})", (10, 120), font, 0.6, (255, 255, 255), 2)
-        cv2.putText(vis_frame, f"FPS: {self.get_fps():.1f}", (10, 150), font, 0.6, (255, 255, 255), 2)
+        # Draw status information
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        y_offset = 30
+        cv2.putText(vis_frame, f"Status: {status}", (10, y_offset), font, 0.6, (255, 255, 255), 2)
+        y_offset += 30
+        cv2.putText(vis_frame, f"Confidence: {confidence:.2f}", (10, y_offset), font, 0.6, (255, 255, 255), 2)
+        y_offset += 30
+        cv2.putText(vis_frame, f"Position: ({x}, {y})", (10, y_offset), font, 0.6, (255, 255, 255), 2)
+        y_offset += 30
+        cv2.putText(vis_frame, f"Velocity: ({velocity[0]:.1f}, {velocity[1]:.1f})", (10, y_offset), font, 0.6, (255, 255, 255), 2)
+        y_offset += 30
+        cv2.putText(vis_frame, f"FPS: {self.get_fps():.1f}", (10, y_offset), font, 0.6, (255, 255, 255), 2)
+        y_offset += 30
+        if self.tracked_points is not None:
+            cv2.putText(vis_frame, f"Features: {len(self.tracked_points)}", (10, y_offset), font, 0.6, (255, 255, 255), 2)
         
         return vis_frame
 
@@ -638,25 +477,24 @@ def main():
         print("[ERROR] Cannot start camera. Exiting.")
         return
     
-    # Initialize tracker with highly responsive parameters
+    # Initialize tracker with smoothing parameters
     tracker = HeartTracker(
-        process_noise=200.0,   # Very high process noise = instant response
-        measurement_noise=1.0, # Very low measurement noise = trust SIFT almost completely
-        sift_features=1000,
-        match_ratio=0.75,
-        min_matches=8,
-        constellation_radius=150  # Spread points widely to avoid simultaneous occlusion
+        process_noise=10.0,              # Moderate smoothing
+        measurement_noise=20.0,          # Trust measurements less for stability
+        sift_features=500,               # Detect 500 features initially
+        min_tracked_features=15,         # Need 15 features minimum
+        constellation_radius=150,        # Wide constellation
+        optical_flow_redetect_threshold=10  # Re-detect when <10 features
     )
     
     print("\n[INFO] Click on the target point on the heart to start tracking")
-    print("[INFO] Press 'q' to quit, 'r' to reset tracking, 'p' to pause")
-    print("[INFO] Press '+'/'-' to adjust process noise")
-    print("[INFO] Press '['/']' to adjust measurement noise")
+    print("[INFO] Press 'q' to quit, 'r' to reset tracking")
+    print("[INFO] Cyan dots = tracked features, Orange circles = constellation")
+    print("[INFO] Green crosshair = good tracking, Red = low confidence")
     
     # Mouse callback for selecting target point
     target_selected = False
     clicked_point = None
-    paused = False
     
     def mouse_callback(event, x, y, flags, param):
         nonlocal clicked_point, target_selected
@@ -686,7 +524,7 @@ def main():
             
             # Track if initialized and not paused
             if tracker.tracking_initialized and not paused:
-                tracked_pos, confidence, status = tracker.track(frame)
+                tracked_pos, confidence, sttrack(frame)
                 vis_frame = tracker.visualize(frame, tracked_pos, confidence, status)
             else:
                 vis_frame = frame.copy()
@@ -694,9 +532,6 @@ def main():
                     cv2.putText(vis_frame, "Click to select target point", 
                                (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
                 elif paused:
-                    cv2.putText(vis_frame, "PAUSED - Press 'p' to resume", 
-                               (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
-            
             # Display
             cv2.imshow('Heart Tracker', vis_frame)
             
@@ -713,30 +548,7 @@ def main():
             elif key == ord('p'):
                 paused = not paused
                 print(f"\n[INFO] {'Paused' if paused else 'Resumed'}")
-            elif key == ord('+') or key == ord('='):
-                tracker.process_noise *= 1.2
-                if tracker.ekf:
-                    tracker.ekf.adjust_noise_parameters(process_noise=tracker.process_noise)
-                print(f"\n[INFO] Process noise: {tracker.process_noise:.2f}")
-            elif key == ord('-'):
-                tracker.process_noise /= 1.2
-                if tracker.ekf:
-                    tracker.ekf.adjust_noise_parameters(process_noise=tracker.process_noise)
-                print(f"\n[INFO] Process noise: {tracker.process_noise:.2f}")
-            elif key == ord('['):
-                tracker.measurement_noise /= 1.2
-                if tracker.ekf:
-                    tracker.ekf.adjust_noise_parameters(measurement_noise=tracker.measurement_noise)
-                print(f"\n[INFO] Measurement noise: {tracker.measurement_noise:.2f}")
-            elif key == ord(']'):
-                tracker.measurement_noise *= 1.2
-                if tracker.ekf:
-                    tracker.ekf.adjust_noise_parameters(measurement_noise=tracker.measurement_noise)
-                print(f"\n[INFO] Measurement noise: {tracker.measurement_noise:.2f}")
-    
-    except KeyboardInterrupt:
-        print("\n[INFO] Interrupted by user")
-    
+            elif key == ord('+') or key
     finally:
         # Cleanup
         camera.stop()
