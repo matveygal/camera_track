@@ -228,14 +228,14 @@ class HeartTrackerOpticalFlow:
         displacements = new_features - old_features
         
         # Use median (robust to outliers)
-        median_disp = np.median(displacements, axis=0)
+        median_disp = np.median(displacements, axis=0).flatten()
         
         # Apply to target
         estimated_pos = self.target_point + median_disp
         
         # Sanity check
-        if (estimated_pos[0] < -100 or estimated_pos[0] > 740 or
-            estimated_pos[1] < -100 or estimated_pos[1] > 580):
+        x, y = float(estimated_pos[0]), float(estimated_pos[1])
+        if x < -100 or x > 740 or y < -100 or y > 580:
             return None
         
         # Update reference

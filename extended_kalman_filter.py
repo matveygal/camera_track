@@ -18,7 +18,7 @@ class ExtendedKalmanFilter:
     a moving surface (e.g., beating heart) while smoothing measurement noise.
     """
     
-    def __init__(self, initial_position, process_noise=10.0, measurement_noise=5.0, dt=0.033):
+    def __init__(self, initial_position, process_noise=200.0, measurement_noise=1.0, dt=0.033):
         """
         Initialize the Extended Kalman Filter.
         
