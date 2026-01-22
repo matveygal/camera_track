@@ -39,8 +39,8 @@ class ExtendedKalmanFilter:
         ], dtype=np.float32)
         
         # State covariance matrix (uncertainty in our estimate)
-        # Start with high uncertainty so filter quickly adapts to measurements
-        self.P = np.eye(4, dtype=np.float32) * 1000.0
+        # Start with lower uncertainty = more confidence in initial position
+        self.P = np.eye(4, dtype=np.float32) * 10.0
         
         # Process noise covariance matrix
         # Models uncertainty in the motion model

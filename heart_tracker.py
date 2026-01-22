@@ -32,7 +32,7 @@ class HeartTracker:
                  measurement_noise=5.0,
                  sift_features=1000,
                  match_ratio=0.75,
-                 min_matches=4,
+                 min_matches=8,
                  constellation_radius=50):
         """
         Initialize the heart tracker.
@@ -97,11 +97,16 @@ class HeartTracker:
             return False
         
         # Initialize main EKF at target point
+        # Start with very high trust in measurements during initialization
         self.ekf = ExtendedKalmanFilter(
             initial_position=target_point,
             process_noise=self.process_noise,
             measurement_noise=self.measurement_noise
         )
+        
+        # Track initialization phase (trust measurements more initially)
+        self.initialization_frames = 0
+        self.initialization_period = 30  # First 30 frames
         
         # Create constellation of tracking points around target
         self._initialize_constellation(target_point)
@@ -189,9 +194,15 @@ class HeartTracker:
         
         # Compute homography using RANSAC for outlier rejection
         try:
-            H, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 5.0)
+            # Use stricter RANSAC threshold for better outlier rejection
+            H, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 3.0)
             
             if H is None:
+                return None
+            
+            # Check if we have enough inliers
+            inlier_count = np.sum(mask)
+            if inlier_count < self.min_matches:
                 return None
             
             # Transform target point using homography
@@ -200,6 +211,11 @@ class HeartTracker:
             
             # Convert from homogeneous coordinates
             estimated_position = transformed[0, :2] / transformed[0, 2]
+            
+            # Sanity check: reject if position is way outside frame
+            if (estimated_position[0] < -100 or estimated_position[0] > 740 or
+                estimated_position[1] < -100 or estimated_position[1] > 580):
+                return None
             
             return estimated_position
             
@@ -287,11 +303,22 @@ class HeartTracker:
         
         # Determine tracking status and update EKF
         if estimated_position is not None and len(good_matches) >= self.min_matches:
-            # Good tracking: update EKF with measurement
-            tracked_position = self.ekf.update(estimated_position)
+            # During initialization, trust measurements heavily
+            if self.initialization_frames < self.initialization_period:
+                # Blend more heavily towards measurement during init
+                blend_factor = 0.7  # 70% measurement, 30% prediction
+                prediction = self.ekf.predict()
+                blended_position = blend_factor * estimated_position + (1 - blend_factor) * prediction
+                tracked_position = self.ekf.update(blended_position)
+                self.initialization_frames += 1
+                status = f"Initializing ({self.initialization_frames}/{self.initialization_period})"
+            else:
+                # Good tracking: update EKF with measurement
+                tracked_position = self.ekf.update(estimated_position)
+                status = f"Tracking ({len(good_matches)} matches)"
+            
             self.frames_without_match = 0
             confidence = min(1.0, len(good_matches) / (self.min_matches * 3))
-            status = f"Tracking ({len(good_matches)} matches)"
             
         else:
             # No direct measurement: use prediction
@@ -484,13 +511,13 @@ def main():
         print("[ERROR] Cannot start camera. Exiting.")
         return
     
-    # Initialize tracker
+    # Initialize tracker with responsive parameters
     tracker = HeartTracker(
-        process_noise=50.0,
-        measurement_noise=5.0,
+        process_noise=50.0,   # High process noise = trust measurements more
+        measurement_noise=5.0, # Low measurement noise = trust SIFT more
         sift_features=1000,
         match_ratio=0.75,
-        min_matches=4,
+        min_matches=8,
         constellation_radius=50
     )
     
