@@ -107,14 +107,29 @@ class HeartTracker:
         # Convert keypoints to array of points for optical flow
         self.tracked_points = np.array([kp.pt for kp in keypoints], dtype=np.float32).reshape(-1, 1, 2)
         
-        # Find the feature closest to the target point
-        distances = np.linalg.norm(self.tracked_points.reshape(-1, 2) - target_point, axis=1)
-        self.target_feature_idx = np.argmin(distances)
+        # Find features close to the target point (within a small radius)
+        points_flat = self.tracked_points.reshape(-1, 2)
+        distances = np.linalg.norm(points_flat - target_point, axis=1)
+        
+        # Find features within 30 pixels of clicked point
+        nearby_features = distances < 30
+        
+        if not np.any(nearby_features):
+            # No features near click - use closest feature
+            self.target_feature_idx = np.argmin(distances)
+            print(f"[WARNING] No features near click point, using closest feature {distances[self.target_feature_idx]:.1f}px away")
+        else:
+            # Use the closest feature among nearby ones
+            nearby_indices = np.where(nearby_features)[0]
+            nearby_distances = distances[nearby_indices]
+            closest_nearby = nearby_indices[np.argmin(nearby_distances)]
+            self.target_feature_idx = closest_nearby
+            print(f"[INFO] Found feature {distances[self.target_feature_idx]:.1f}px from click point")
         
         # Initialize constellation: find features around the target
         self._initialize_constellation(target_point)
         
-        # Initialize EKF at target point with smoothing parameters
+        # Initialize EKF at the CLICKED point (not the feature point)
         self.ekf = ExtendedKalmanFilter(
             initial_position=target_point,
             process_noise=self.process_noise,
@@ -124,9 +139,9 @@ class HeartTracker:
         self.tracking_initialized = True
         self.frames_since_redetection = 0
         
-        print(f"[INFO] Tracking initialized")
+        print(f"[INFO] Tracking initialized at clicked position")
         print(f"[INFO] Tracking {len(self.tracked_points)} features with optical flow")
-        print(f"[INFO] Target feature index: {self.target_feature_idx}")
+        print(f"[INFO] Primary target: feature #{self.target_feature_idx}")
         print(f"[INFO] Constellation: {len(self.constellation_indices)} points")
         
         return True
@@ -352,10 +367,14 @@ class HeartTracker:
             int(255 * (1 - confidence))    # Red
         )
         
-        # Draw tracked features (optical flow points)
+        # Draw tracked features (optical flow points) - small cyan dots
         if self.tracked_points is not None:
-            for point in self.tracked_points.reshape(-1, 2):
-                cv2.circle(vis_frame, tuple(point.astype(int)), 2, (255, 200, 0), -1)
+            for i, point in enumerate(self.tracked_points.reshape(-1, 2)):
+                # Highlight the primary target feature differently
+                if i == self.target_feature_idx:
+                    cv2.circle(vis_frame, tuple(point.astype(int)), 6, (0, 255, 0), 2)  # Green circle for primary target
+                else:
+                    cv2.circle(vis_frame, tuple(point.astype(int)), 2, (255, 200, 0), -1)  # Cyan for others
         
         # Highlight constellation points
         if self.constellation_indices:
@@ -364,7 +383,7 @@ class HeartTracker:
                     pt = self.tracked_points[idx][0]
                     cv2.circle(vis_frame, tuple(pt.astype(int)), 5, (255, 128, 0), 2)
         
-        # Draw crosshair at tracked position
+        # Draw crosshair at tracked position (filtered result)
         size = 20
         cv2.line(vis_frame, (x - size, y), (x + size, y), color, 3)
         cv2.line(vis_frame, (x, y - size), (x, y + size), color, 3)
