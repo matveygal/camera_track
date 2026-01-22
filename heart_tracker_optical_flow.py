@@ -55,9 +55,11 @@ class HeartTrackerOpticalFlow:
         
         # Optical flow tracking
         self.prev_gray = None
-        self.tracked_features = None  # Features tracked with optical flow
+        self.tracked_features = None  # Current feature positions
+        self.initial_features = None  # Initial feature positions (reference)
         self.feature_ages = None
         self.max_feature_age = 60  # Re-detect after 60 frames (2 sec @ 30fps)
+        self.initial_target = None  # Initial target position (reference)
         
         # Reference frame for SIFT re-detection
         self.reference_keypoints = None
@@ -82,6 +84,7 @@ class HeartTrackerOpticalFlow:
         Initialize tracking by selecting target and detecting SIFT features.
         """
         self.target_point = np.array(target_point, dtype=np.float32)
+        self.initial_target = np.array(target_point, dtype=np.float32).copy()
         
         # Detect SIFT features
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -93,6 +96,9 @@ class HeartTrackerOpticalFlow:
         
         # Select features near target for optical flow tracking
         self._select_tracking_features(target_point)
+        
+        # Store initial feature positions as reference
+        self.initial_features = self.tracked_features.copy()
         
         # Initialize EKF
         self.ekf = ExtendedKalmanFilter(
@@ -219,27 +225,33 @@ class HeartTrackerOpticalFlow:
     def _estimate_from_optical_flow(self, old_features, new_features):
         """
         Estimate target position from optical flow displacements.
-        Uses median displacement for robustness.
+        Uses median displacement relative to initial features.
         """
-        if len(old_features) < 3:
+        if len(old_features) < 3 or self.initial_features is None:
             return None
         
-        # Calculate displacements
-        displacements = new_features - old_features
+        # Find displacement from initial to current positions
+        # Use only features that correspond to initial features
+        num_features = min(len(new_features), len(self.initial_features))
+        if num_features < 3:
+            return None
         
-        # Use median (robust to outliers)
+        current_subset = new_features[:num_features]
+        initial_subset = self.initial_features[:num_features]
+        
+        # Calculate total displacement from initial positions
+        displacements = current_subset - initial_subset
+        
+        # Use median displacement (robust to outliers)
         median_disp = np.median(displacements, axis=0).flatten()
         
-        # Apply to target
-        estimated_pos = self.target_point + median_disp
+        # Apply displacement to INITIAL target position
+        estimated_pos = self.initial_target + median_disp
         
         # Sanity check
         x, y = float(estimated_pos[0]), float(estimated_pos[1])
         if x < -100 or x > 740 or y < -100 or y > 580:
             return None
-        
-        # Update reference
-        self.target_point = estimated_pos
         
         return estimated_pos
     
@@ -284,12 +296,16 @@ class HeartTrackerOpticalFlow:
             transformed = (H @ target_h.T).T
             estimated_pos = transformed[0, :2] / transformed[0, 2]
             
-            # Re-select features for optical flow
+            # Re-select features for optical flow around new position
             self.reference_keypoints = current_kp
             self.reference_descriptors = current_desc
             self._select_tracking_features(estimated_pos)
+            
+            # Update reference positions for next optical flow cycle
+            self.initial_features = self.tracked_features.copy()
+            self.initial_target = estimated_pos.copy()
+            
             self.prev_gray = gray.copy()
-            self.target_point = estimated_pos
             
             # Update EKF
             tracked_pos = self.ekf.update(estimated_pos)
@@ -309,16 +325,17 @@ class HeartTrackerOpticalFlow:
     
     def _update_constellation(self, tracked_position):
         """Update constellation to follow target."""
-        if tracked_position is None:
+        if tracked_position is None or self.initial_target is None:
             for ekf in self.constellation_ekfs:
                 ekf.predict()
             return
         
-        # Maintain geometric relationship
-        offset = tracked_position - self.target_point
+        # Calculate displacement from initial target position
+        displacement = tracked_position - self.initial_target
         
+        # Apply same displacement to each constellation point
         for i, (init_point, ekf) in enumerate(zip(self.constellation_points, self.constellation_ekfs)):
-            new_pos = init_point + offset
+            new_pos = init_point + displacement
             ekf.update(new_pos)
     
     def _update_fps(self):
