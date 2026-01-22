@@ -61,6 +61,19 @@ class HeartTracker:
         self.target_point = None
         self.tracking_initialized = False
         
+        # Optical flow tracking
+        self.prev_gray = None
+        self.tracked_points = None  # Points being tracked with optical flow
+        self.optical_flow_age = 0   # How many frames since last SIFT re-detection
+        self.max_optical_flow_age = 30  # Re-run SIFT every N frames for drift correction
+        
+        # Lucas-Kanade optical flow parameters
+        self.lk_params = dict(
+            winSize=(21, 21),
+            maxLevel=3,
+            criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 30, 0.01)
+        )
+        
         # Constellation tracking (multiple points around target)
         self.constellation_ekfs = []
         self.constellation_points = []
@@ -77,6 +90,9 @@ class HeartTracker:
         self.process_noise = process_noise
         self.measurement_noise = measurement_noise
         
+        # Use moderate filtering (not too aggressive, not too direct)
+        self.tracking_smoothness = 0.3  # 30% new measurement, 70% filtered
+        
     def initialize_tracking(self, frame, target_point):
         """
         Initialize tracking by selecting a target point and extracting features.
@@ -91,6 +107,15 @@ class HeartTracker:
         # Detect SIFT features in reference frame
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         self.reference_keypoints, self.reference_descriptors = self.sift.detectAndCompute(gray, None)
+        
+        if self.reference_descriptors is None or len(self.reference_keypoints) < self.min_matches:
+            print(f"[WARNING] Not enough features detected: {len(self.reference_keypoints) if self.reference_keypoints else 0}")
+            return False
+        
+        # Initialize optical flow tracking with points near target
+        self.prev_gray = gray.copy()
+        self._initialize_optical_flow_points(gray, target_point)
+        self.optical_flow_age = 0
         
         if self.reference_descriptors is None or len(self.reference_keypoints) < self.min_matches:
             print(f"[WARNING] Not enough features detected: {len(self.reference_keypoints) if self.reference_keypoints else 0}")
@@ -116,9 +141,36 @@ class HeartTracker:
         
         print(f"[INFO] Tracking initialized at point ({target_point[0]:.1f}, {target_point[1]:.1f})")
         print(f"[INFO] Detected {len(self.reference_keypoints)} SIFT features")
+        print(f"[INFO] Optical flow tracking {len(self.tracked_points)} points")
         print(f"[INFO] Constellation: {len(self.constellation_points)} auxiliary points")
         
         return True
+    
+    def _initialize_optical_flow_points(self, gray, center_point):
+        """
+        Initialize points for optical flow tracking.
+        Select good corners to track near the target point.
+        """
+        # Create mask to find features near target
+        mask = np.zeros_like(gray)
+        radius = 80  # Look for trackable points within this radius
+        cv2.circle(mask, tuple(center_point.astype(int)), radius, 255, -1)
+        
+        # Detect good features to track (Shi-Tomasi corners)
+        corners = cv2.goodFeaturesToTrack(
+            gray,
+            maxCorners=30,
+            qualityLevel=0.01,
+            minDistance=7,
+            blockSize=7,
+            mask=mask
+        )
+        
+        if corners is not None:
+            self.tracked_points = corners
+        else:
+            # Fallback: just track the target point itself
+            self.tracked_points = np.array([[center_point]], dtype=np.float32)
     
     def _initialize_constellation(self, center_point):
         """
@@ -265,7 +317,7 @@ class HeartTracker:
     
     def track(self, frame):
         """
-        Track the target point in a new frame.
+        Track the target point in a new frame using optical flow + periodic SIFT validation.
         
         Args:
             frame: Current RGB frame
@@ -278,66 +330,34 @@ class HeartTracker:
         if not self.tracking_initialized:
             return None, 0.0, "Not initialized"
         
-        # Match features
-        good_matches, current_keypoints = self._match_features(frame)
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         
-        # Estimate target position from SIFT matches
-        estimated_position = self._estimate_target_position(good_matches, current_keypoints)
+        # Primary tracking method: optical flow (fast and stable)
+        tracked_position, confidence, status = self._track_with_optical_flow(gray)
         
-        # Determine tracking status and update EKF
-        tracked_position = None
-        
-        if estimated_position is not None and len(good_matches) >= self.min_matches:
-            # Adaptive filtering: with many good matches, trust measurement almost completely
-            # With fewer matches, use more filtering
-            match_quality = len(good_matches) / (self.min_matches * 3)
-            
-            if len(good_matches) >= self.min_matches * 2:
-                # Excellent tracking: use measurement almost directly (95% measurement)
-                tracked_position = 0.95 * estimated_position + 0.05 * self.ekf.get_position()
-                self.ekf.update(estimated_position)  # Still update filter for velocity estimation
-                status = f"Tracking [EXCELLENT] ({len(good_matches)} matches)"
-                confidence = 1.0
-            else:
-                # Good tracking: use standard EKF update
-                tracked_position = self.ekf.update(estimated_position)
-                status = f"Tracking ({len(good_matches)} matches)"
-                confidence = min(1.0, match_quality)
-            
-            self.frames_without_match = 0
-            self.initialization_frames += 1
-            
-        else:
-            # No direct measurement: use prediction
-            self.frames_without_match += 1
-            
-            if self.frames_without_match < 5:
-                # Short occlusion: trust EKF prediction
+        # Periodically validate with SIFT to prevent drift
+        self.optical_flow_age += 1
+        if self.optical_flow_age >= self.max_optical_flow_age or confidence < 0.5:
+            # Re-detect with SIFT and reinitialize optical flow
+            sift_position = self._validate_with_sift(frame)
+            if sift_position is not None:
+                # SIFT validation successful - reset optical flow from this position
+                self._initialize_optical_flow_points(gray, sift_position)
+                tracked_position = sift_position
+                self.optical_flow_age = 0
+                status = "SIFT re-initialized"
+                confidence = 0.9
+            elif confidence < 0.3:
+                # Both optical flow and SIFT failing - use pure prediction
                 tracked_position = self.ekf.predict()
-                confidence = 0.7
-                status = "Predicting (short occlusion)"
-                
-            else:
-                # Longer occlusion: try constellation recovery
-                recovered_position = self._recover_from_constellation()
-                
-                if recovered_position is not None:
-                    tracked_position = self.ekf.update(recovered_position)
-                    confidence = 0.5
-                    status = f"Constellation recovery ({self.frames_without_match} frames)"
-                else:
-                    # Pure prediction
-                    tracked_position = self.ekf.predict()
-                    confidence = max(0.1, 0.8 - self.frames_without_match * 0.05)
-                    status = f"Pure prediction ({self.frames_without_match} frames)"
+                confidence = 0.2
+                status = "Prediction only"
         
-        # Update constellation to follow tracked position
+        # Update constellation
         self._update_constellation(tracked_position)
         
-        # Check if tracking is lost
-        if self.ekf.is_tracking_lost():
-            confidence = 0.0
-            status = "Tracking lost"
+        # Store current frame for next optical flow
+        self.prev_gray = gray.copy()
         
         # Update FPS
         current_time = time.time()
@@ -346,6 +366,75 @@ class HeartTracker:
         self.last_frame_time = current_time
         
         return tracked_position, confidence, status
+    
+    def _track_with_optical_flow(self, gray):
+        """
+        Track points using Lucas-Kanade optical flow.
+        Much more stable than frame-by-frame SIFT matching.
+        """
+        if self.prev_gray is None or self.tracked_points is None:
+            return None, 0.0, "No previous frame"
+        
+        # Calculate optical flow
+        new_points, status, error = cv2.calcOpticalFlowPyrLK(
+            self.prev_gray,
+            gray,
+            self.tracked_points,
+            None,
+            **self.lk_params
+        )
+        
+        if new_points is None:
+            return None, 0.0, "Optical flow failed"
+        
+        # Select good points (status == 1)
+        good_new = new_points[status == 1]
+        good_old = self.tracked_points[status == 1]
+        
+        if len(good_new) < 3:
+            # Not enough points tracked
+            return None, 0.3, f"Few points ({len(good_new)})"
+        
+        # Estimate transformation from old to new points
+        # Use affine transform for robustness
+        transform_matrix, inliers = cv2.estimateAffinePartial2D(
+            good_old,
+            good_new,
+            method=cv2.RANSAC,
+            ransacReprojThreshold=3.0
+        )
+        
+        if transform_matrix is None:
+            return None, 0.3, "Transform estimation failed"
+        
+        # Apply transformation to target point
+        target_homogeneous = np.array([[self.target_point[0], self.target_point[1], 1.0]])
+        estimated_position = (transform_matrix @ target_homogeneous.T).T[0]
+        
+        # Update EKF with optical flow measurement (with proper filtering)
+        filtered_position = self.ekf.update(estimated_position)
+        
+        # Update tracked points for next frame
+        self.tracked_points = good_new.reshape(-1, 1, 2)
+        
+        # Calculate confidence based on number of inliers
+        inlier_count = np.sum(inliers) if inliers is not None else len(good_new)
+        confidence = min(1.0, inlier_count / 15.0)
+        
+        return filtered_position, confidence, f"Optical flow ({len(good_new)} pts)"
+    
+    def _validate_with_sift(self, frame):
+        """
+        Validate optical flow tracking with SIFT matching.
+        Used periodically to prevent drift.
+        """
+        # Match features
+        good_matches, current_keypoints = self._match_features(frame)
+        
+        # Estimate target position from SIFT
+        estimated_position = self._estimate_target_position(good_matches, current_keypoints)
+        
+        return estimated_position
     
     def get_fps(self):
         """Get average FPS over recent frames."""
@@ -464,10 +553,10 @@ class RealSenseCamera:
         if not self.is_running:
             return None
         
-        try:
-            frames = self.pipeline.wait_for_frames(timeout_ms=5000)
-            color_frame = frames.get_color_frame()
-            
+        try:optical flow + SIFT hybrid approach
+    tracker = HeartTracker(
+        process_noise=10.0,    # Moderate process noise for smooth tracking
+        measurement_noise=5.0,  # Moderate measurement noise - trust optical flow reasonab
             if not color_frame:
                 return None
             
