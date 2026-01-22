@@ -250,7 +250,7 @@ class HeartTrackerOpticalFlow:
         # Detect new SIFT features
         current_kp, current_desc = self.sift.detectAndCompute(gray, None)
         
-        if not current_desc or not self.reference_descriptors:
+        if current_desc is None or self.reference_descriptors is None or len(current_desc) == 0:
             return self.ekf.predict(), 0.3, "SIFT failed - predicting"
         
         # Match features
