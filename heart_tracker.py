@@ -122,7 +122,10 @@ class HeartTracker:
             print(f"[WARNING] Not enough features detected: {len(self.reference_keypoints) if self.reference_keypoints else 0}")
             return False
         
-        # Initialize main 10.0,  # More smoothing for optical flow
+        # Initialize main EKF at target point
+        self.ekf = ExtendedKalmanFilter(
+            initial_position=target_point,
+            process_noise=10.0,
             measurement_noise=5.0
         )
         
@@ -139,7 +142,6 @@ class HeartTracker:
         corners = cv2.goodFeaturesToTrack(gray, mask=mask, **self.feature_params)
         
         if corners is not None:
-        self.frames_since_sift_validation = 0
             self.tracked_points = corners
             self.track_ids = list(range(len(corners)))
             print(f"[INFO] Initialized {len(corners)} optical flow tracking points")
@@ -148,15 +150,12 @@ class HeartTracker:
             self.track_ids = [0]
             print(f"[WARNING] No good features found, tracking target point directly")
         
-        # Track initialization phase (trust measurements more initially)
-        self.initialization_frames = 0
-        self.initialization_period = 30  # First 30 frames
-        
         # Create constellation of tracking points around target
         self._initialize_constellation(target_point)
         
         self.tracking_initialized = True
         self.frames_without_match = 0
+        self.frames_since_sift_validation = 0
         
         print(f"[INFO] Tracking initialized at point ({target_point[0]:.1f}, {target_point[1]:.1f})")
         print(f"[INFO] Detected {len(self.reference_keypoints)} SIFT features")
