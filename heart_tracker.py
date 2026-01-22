@@ -223,42 +223,28 @@ class HeartTracker:
             print(f"[WARNING] Homography estimation failed: {e}")
             return None
     
-    def _update_constellation(self, good_matches, current_keypoints):
+    def _update_constellation(self, tracked_position):
         """
         Update constellation of tracking points.
-        Helps maintain tracking when primary point is occluded.
+        Keep them in fixed geometric relationship to the tracked target.
+        Only use their EKFs during occlusion for recovery.
         """
-        if len(good_matches) < self.min_matches:
-            # Predict all constellation points
+        if tracked_position is None:
+            # During occlusion, let constellation EKFs predict
             for ekf in self.constellation_ekfs:
                 ekf.predict()
             return
         
-        # Extract matched point coordinates
-        src_pts = np.float32([self.reference_keypoints[m.queryIdx].pt for m in good_matches])
-        dst_pts = np.float32([current_keypoints[m.trainIdx].pt for m in good_matches])
+        # Update constellation to maintain geometric relationship with tracked position
+        # Calculate the offset from initial target to current tracked position
+        offset = tracked_position - self.target_point
         
-        # Compute homography
-        try:
-            H, _ = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 5.0)
-            
-            if H is not None:
-                # Update each constellation point
-                for i, (point, ekf) in enumerate(zip(self.constellation_points, self.constellation_ekfs)):
-                    point_homogeneous = np.array([[point[0], point[1], 1.0]])
-                    transformed = (H @ point_homogeneous.T).T
-                    estimated_pos = transformed[0, :2] / transformed[0, 2]
-                    
-                    ekf.update(estimated_pos)
-            else:
-                # Predict only
-                for ekf in self.constellation_ekfs:
-                    ekf.predict()
-                    
-        except Exception:
-            # Predict only if homography fails
-            for ekf in self.constellation_ekfs:
-                ekf.predict()
+        # Update each constellation point by applying the same offset
+        for i, (initial_point, ekf) in enumerate(zip(self.constellation_points, self.constellation_ekfs)):
+            # New position maintains the same geometric relationship
+            new_position = initial_point + offset
+            # Update EKF directly (for velocity estimation and occlusion prediction)
+            ekf.update(new_position)
     
     def _recover_from_constellation(self):
         """
@@ -312,10 +298,8 @@ class HeartTracker:
                 tracked_position = 0.95 * estimated_position + 0.05 * self.ekf.get_position()
                 self.ekf.update(estimated_position)  # Still update filter for velocity estimation
                 status = f"Tracking [EXCELLENT] ({len(good_matches)} matches)"
-                confidence = 1.0
-            else:
-                # Good tracking: use standard EKF update
-                tracked_position = self.ekf.update(estimated_position)
+          Determine tracking status and update EKF
+        tracked_position = None(estimated_position)
                 status = f"Tracking ({len(good_matches)} matches)"
                 confidence = min(1.0, match_quality)
             
@@ -348,7 +332,10 @@ class HeartTracker:
         
         # Check if tracking is lost
         if self.ekf.is_tracking_lost():
-            confidence = 0.0
+        # Update constellation to follow tracked position
+        self._update_constellation(tracked_position)
+        
+        # Check if tracking is lost
             status = "Tracking lost"
         
         # Update FPS
