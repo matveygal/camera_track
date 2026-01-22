@@ -15,8 +15,9 @@ MIN_MATCHES_REQUIRED = 8        # Minimum matches for valid tracking
 
 # Extended Kalman Filter Parameters
 # These control the balance between trusting the motion model vs. measurements
-EKF_PROCESS_NOISE = 10.0        # Lower = trust motion model more (smoother, less responsive)
-EKF_MEASUREMENT_NOISE = 5.0     # Lower = trust measurements more (noisier, more responsive)
+# For optical flow tracking, use more temporal smoothing
+EKF_PROCESS_NOISE = 10.0        # Moderate trust in motion model for smoothing
+EKF_MEASUREMENT_NOISE = 5.0     # Trust optical flow measurements (they're already smooth)
 
 # Constellation Tracking Parameters
 CONSTELLATION_RADIUS = 150       # Pixels around target to place constellation points
