@@ -331,12 +331,12 @@ class HeartTracker:
                     confidence = max(0.1, 0.8 - self.frames_without_match * 0.05)
                     status = f"Pure prediction ({self.frames_without_match} frames)"
         
-        # Check if tracking is lost
-        if self.ekf.is_tracking_lost():
         # Update constellation to follow tracked position
         self._update_constellation(tracked_position)
         
         # Check if tracking is lost
+        if self.ekf.is_tracking_lost():
+            confidence = 0.0
             status = "Tracking lost"
         
         # Update FPS
