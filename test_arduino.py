@@ -12,8 +12,15 @@ def find_arduino():
     """Find Arduino USB port automatically."""
     ports = serial.tools.list_ports.comports()
     for port in ports:
-        # Arduino Uno typically shows as usbmodem or usbserial on macOS
-        if 'usbmodem' in port.device or 'usbserial' in port.device:
+        desc = port.description.lower()
+        device = port.device.lower()
+        
+        # Check for Arduino/Elegoo in description or common device patterns
+        if any(keyword in desc for keyword in ['arduino', 'elegoo', 'ch340', 'ch341', 'ftdi']):
+            print(f"Found Arduino on {port.device}")
+            return port.device
+        # macOS patterns
+        if 'usbmodem' in device or 'usbserial' in device:
             print(f"Found Arduino on {port.device}")
             return port.device
     return None
