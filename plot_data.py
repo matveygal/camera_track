@@ -34,22 +34,22 @@ def plot_csv(filename):
     times = np.array(times)
     distances = np.array(distances)
     
-    # Create smooth interpolated curve that passes through ALL original points
-    # Generate many interpolated points between measurements for smooth transitions
-    time_smooth = np.linspace(times.min(), times.max(), len(times) * 50)
+    # Apply mild smoothing to reduce discrete steps while staying close to original points
+    # Savitzky-Golay with small window smooths transitions without losing sharp changes
+    window = min(11, len(distances) if len(distances) % 2 == 1 else len(distances) - 1)
+    if window >= 5:
+        distances_smooth = savgol_filter(distances, window, 2)
+    else:
+        distances_smooth = distances
     
-    try:
-        # Cubic spline passes through all data points while smoothing between them
-        spline = make_interp_spline(times, distances, k=3)
-        distance_smooth = spline(time_smooth)
-    except:
-        # Fallback to linear interpolation if spline fails
-        distance_smooth = np.interp(time_smooth, times, distances)
+    # High-resolution interpolation for smooth line rendering
+    time_interp = np.linspace(times.min(), times.max(), len(times) * 50)
+    distance_interp = np.interp(time_interp, times, distances_smooth)
     
-    # Create plot with smooth line
+    # Create plot
     plt.figure(figsize=(12, 6))
-    plt.plot(time_smooth, distance_smooth, 'b-', linewidth=2, label='Distance')
-    plt.plot(times, distances, 'ro', markersize=2, alpha=0.5, label='Measurements')
+    plt.plot(time_interp, distance_interp, 'b-', linewidth=2, label='Distance')
+    plt.plot(times, distances, 'ro', markersize=2, alpha=0.5, label='Raw measurements')
     plt.xlabel('Time (seconds)', fontsize=12)
     plt.ylabel('Distance (mm)', fontsize=12)
     plt.title(f'Tracking Data: {Path(filename).name}', fontsize=14)
