@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Test Arduino servo control via serial.
+Test Arduino stepper motor control via serial.
 Upload arduino_servo_control.ino to Arduino first.
-Servo should be connected to pin 9.
+Stepper motor should be connected to pins 8, 9, 10, 11 (IN1-IN4).
 """
 
 import serial
@@ -27,7 +27,7 @@ def find_arduino():
     return None
 
 def test_connection():
-    """Test Arduino servo control."""
+    """Test Arduino stepper motor control."""
     # Find Arduino port
     port = find_arduino()
     
@@ -45,29 +45,59 @@ def test_connection():
         print(f"Connected to Arduino on {port}")
         
         # Wait for ready message
-        if ser.in_waiting > 0:
+        time.sleep(0.5)
+        while ser.in_waiting > 0:
             response = ser.readline().decode().strip()
             print(f"Arduino says: {response}")
         
-        print("\nSpinning servo through full range...")
+        print("\nTesting stepper motor...")
+        print("One full rotation forward (2048 steps)...")
         
-        # Sweep servo from 0 to 180 and back
-        for angle in list(range(0, 181, 15)) + list(range(180, -1, -15)):
-            ser.write(f"{angle}\n".encode())
-            time.sleep(0.3)
-            
-            # Read response
-            if ser.in_waiting > 0:
+        # Full rotation forward
+        ser.write(b"2048\n")
+        time.sleep(0.5)
+        
+        # Read responses
+        for _ in range(10):  # Wait up to 5 seconds
+            time.sleep(0.5)
+            while ser.in_waiting > 0:
                 response = ser.readline().decode().strip()
-                print(response)
+                if response:
+                    print(f"  {response}")
+                if "Done" in response:
+                    break
         
-        # Return to center
-        ser.write(b"90\n")
-        time.sleep(0.3)
-        print("\nServo returned to center position")
+        print("\nOne full rotation backward (-2048 steps)...")
+        
+        # Full rotation backward
+        ser.write(b"-2048\n")
+        time.sleep(0.5)
+        
+        # Read responses
+        for _ in range(10):  # Wait up to 5 seconds
+            time.sleep(0.5)
+            while ser.in_waiting > 0:
+                response = ser.readline().decode().strip()
+                if response:
+                    print(f"  {response}")
+                if "Done" in response:
+                    break
+        
+        print("\nHalf rotation forward (1024 steps)...")
+        ser.write(b"1024\n")
+        time.sleep(0.5)
+        
+        for _ in range(6):
+            time.sleep(0.5)
+            while ser.in_waiting > 0:
+                response = ser.readline().decode().strip()
+                if response:
+                    print(f"  {response}")
+                if "Done" in response:
+                    break
         
         ser.close()
-        print("Test complete!")
+        print("\nTest complete!")
         
     except serial.SerialException as e:
         print(f"Error: {e}")
@@ -77,7 +107,7 @@ def test_connection():
             ser.close()
 
 if __name__ == "__main__":
-    print("Arduino Servo Test")
+    print("Arduino Stepper Motor Test")
     print("=" * 50)
     print("Make sure you've uploaded arduino_servo_control.ino first!")
     print()
