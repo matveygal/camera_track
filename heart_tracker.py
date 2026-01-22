@@ -28,8 +28,8 @@ class HeartTracker:
     """
     
     def __init__(self, 
-                 process_noise=50.0, 
-                 measurement_noise=5.0,
+                 process_noise=200.0, 
+                 measurement_noise=1.0,
                  sift_features=1000,
                  match_ratio=0.75,
                  min_matches=8,
@@ -303,22 +303,24 @@ class HeartTracker:
         
         # Determine tracking status and update EKF
         if estimated_position is not None and len(good_matches) >= self.min_matches:
-            # During initialization, trust measurements heavily
-            if self.initialization_frames < self.initialization_period:
-                # Blend more heavily towards measurement during init
-                blend_factor = 0.7  # 70% measurement, 30% prediction
-                prediction = self.ekf.predict()
-                blended_position = blend_factor * estimated_position + (1 - blend_factor) * prediction
-                tracked_position = self.ekf.update(blended_position)
-                self.initialization_frames += 1
-                status = f"Initializing ({self.initialization_frames}/{self.initialization_period})"
+            # Adaptive filtering: with many good matches, trust measurement almost completely
+            # With fewer matches, use more filtering
+            match_quality = len(good_matches) / (self.min_matches * 3)
+            
+            if len(good_matches) >= self.min_matches * 2:
+                # Excellent tracking: use measurement almost directly (95% measurement)
+                tracked_position = 0.95 * estimated_position + 0.05 * self.ekf.get_position()
+                self.ekf.update(estimated_position)  # Still update filter for velocity estimation
+                status = f"Tracking [EXCELLENT] ({len(good_matches)} matches)"
+                confidence = 1.0
             else:
-                # Good tracking: update EKF with measurement
+                # Good tracking: use standard EKF update
                 tracked_position = self.ekf.update(estimated_position)
                 status = f"Tracking ({len(good_matches)} matches)"
+                confidence = min(1.0, match_quality)
             
             self.frames_without_match = 0
-            confidence = min(1.0, len(good_matches) / (self.min_matches * 3))
+            self.initialization_frames += 1
             
         else:
             # No direct measurement: use prediction
@@ -511,10 +513,10 @@ def main():
         print("[ERROR] Cannot start camera. Exiting.")
         return
     
-    # Initialize tracker with responsive parameters
+    # Initialize tracker with highly responsive parameters
     tracker = HeartTracker(
-        process_noise=50.0,   # High process noise = trust measurements more
-        measurement_noise=5.0, # Low measurement noise = trust SIFT more
+        process_noise=200.0,   # Very high process noise = instant response
+        measurement_noise=1.0, # Very low measurement noise = trust SIFT almost completely
         sift_features=1000,
         match_ratio=0.75,
         min_matches=8,
