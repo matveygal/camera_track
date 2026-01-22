@@ -34,29 +34,22 @@ def plot_csv(filename):
     times = np.array(times)
     distances = np.array(distances)
     
-    # Apply Savitzky-Golay filter first to smooth the discrete steps
-    window = min(51, len(distances) if len(distances) % 2 == 1 else len(distances) - 1)
-    if window >= 5:
-        distances_filtered = savgol_filter(distances, window, 3)
-    else:
-        distances_filtered = distances
-    
-    # Now apply cubic spline interpolation on the pre-smoothed data
-    # Generate more points for smoother visualization
-    time_smooth = np.linspace(times.min(), times.max(), len(times) * 20)
+    # Create smooth interpolated curve that passes through ALL original points
+    # Generate many interpolated points between measurements for smooth transitions
+    time_smooth = np.linspace(times.min(), times.max(), len(times) * 50)
     
     try:
-        # Cubic spline on filtered data for ultra-smooth curve
-        spline = make_interp_spline(times, distances_filtered, k=3)
+        # Cubic spline passes through all data points while smoothing between them
+        spline = make_interp_spline(times, distances, k=3)
         distance_smooth = spline(time_smooth)
     except:
-        distance_smooth = distances_filtered
-        time_smooth = times
+        # Fallback to linear interpolation if spline fails
+        distance_smooth = np.interp(time_smooth, times, distances)
     
-    # Create plot with both raw and smooth data
+    # Create plot with smooth line
     plt.figure(figsize=(12, 6))
-    plt.plot(times, distances, 'o', alpha=0.3, markersize=2, label='Raw data', color='lightgray')
-    plt.plot(time_smooth, distance_smooth, 'b-', linewidth=2.5, label='Smoothed')
+    plt.plot(time_smooth, distance_smooth, 'b-', linewidth=2, label='Distance')
+    plt.plot(times, distances, 'ro', markersize=2, alpha=0.5, label='Measurements')
     plt.xlabel('Time (seconds)', fontsize=12)
     plt.ylabel('Distance (mm)', fontsize=12)
     plt.title(f'Tracking Data: {Path(filename).name}', fontsize=14)
