@@ -244,7 +244,7 @@ class HeartTracker:
                 if target_still_tracked:
                     # Calculate new index in filtered array
                     new_target_idx = np.sum(status_bool[:self.target_feature_idx + 1]) - 1
-                    target_position = good_new[new_target_idx]
+                    target_position = good_new[new_target_idx].flatten()  # Ensure 1D array
                 else:
                     # Target feature lost, use constellation centroid
                     target_position = self._estimate_from_constellation(good_new, status_bool)
@@ -280,10 +280,11 @@ class HeartTracker:
     def _estimate_from_constellation(self, good_points, status_bool):
         """
         Estimate target position from constellation when direct tracking fails.
+        Returns flattened array [x, y].
         """
         if len(self.constellation_indices) == 0:
             # No constellation, use centroid of all points
-            return np.mean(good_points, axis=0)
+            return np.mean(good_points, axis=0).flatten()
         
         # Find which constellation features are still tracked
         tracked_constellation = []
@@ -296,10 +297,10 @@ class HeartTracker:
         if len(tracked_constellation) >= 3:
             # Use constellation centroid
             constellation_points = good_points[tracked_constellation]
-            return np.mean(constellation_points, axis=0)
+            return np.mean(constellation_points, axis=0).flatten()
         else:
             # Fall back to all points centroid
-            return np.mean(good_points, axis=0)
+            return np.mean(good_points, axis=0).flatten()
     
     def _update_constellation_indices(self, status_bool):
         """
