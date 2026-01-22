@@ -284,10 +284,9 @@ class HeartTracker:
         # Estimate target position from SIFT matches
         estimated_position = self._estimate_target_position(good_matches, current_keypoints)
         
-        # Update constellation (for redundancy)
-        self._update_constellation(good_matches, current_keypoints)
-        
         # Determine tracking status and update EKF
+        tracked_position = None
+        
         if estimated_position is not None and len(good_matches) >= self.min_matches:
             # Adaptive filtering: with many good matches, trust measurement almost completely
             # With fewer matches, use more filtering
@@ -298,8 +297,10 @@ class HeartTracker:
                 tracked_position = 0.95 * estimated_position + 0.05 * self.ekf.get_position()
                 self.ekf.update(estimated_position)  # Still update filter for velocity estimation
                 status = f"Tracking [EXCELLENT] ({len(good_matches)} matches)"
-          Determine tracking status and update EKF
-        tracked_position = None(estimated_position)
+                confidence = 1.0
+            else:
+                # Good tracking: use standard EKF update
+                tracked_position = self.ekf.update(estimated_position)
                 status = f"Tracking ({len(good_matches)} matches)"
                 confidence = min(1.0, match_quality)
             
