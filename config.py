@@ -11,12 +11,12 @@ CAMERA_FPS = 30
 # SIFT Feature Detection Parameters
 SIFT_N_FEATURES = 1000          # Number of SIFT features to detect
 SIFT_MATCH_RATIO = 0.75         # Lowe's ratio test threshold (0.7-0.8 typical)
-MIN_MATCHES_REQUIRED = 8        # Minimum matches for valid tracking
+MIN_MATCHES_REQUIRED = 4        # Minimum matches for valid tracking (lowered for responsiveness)
 
 # Extended Kalman Filter Parameters
 # These control the balance between trusting the motion model vs. measurements
-EKF_PROCESS_NOISE = 5.0         # Lower = trust motion model more (smoother, less responsive)
-EKF_MEASUREMENT_NOISE = 15.0    # Lower = trust SIFT measurements more (noisier, more responsive)
+EKF_PROCESS_NOISE = 50.0        # Higher = trust motion model less (more responsive to changes)
+EKF_MEASUREMENT_NOISE = 5.0     # Lower = trust SIFT measurements more (follow actual motion)
 
 # Constellation Tracking Parameters
 CONSTELLATION_RADIUS = 50        # Pixels around target to place constellation points

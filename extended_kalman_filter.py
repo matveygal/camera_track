@@ -18,7 +18,7 @@ class ExtendedKalmanFilter:
     a moving surface (e.g., beating heart) while smoothing measurement noise.
     """
     
-    def __init__(self, initial_position, process_noise=1.0, measurement_noise=10.0, dt=0.033):
+    def __init__(self, initial_position, process_noise=50.0, measurement_noise=5.0, dt=0.033):
         """
         Initialize the Extended Kalman Filter.
         
@@ -39,7 +39,8 @@ class ExtendedKalmanFilter:
         ], dtype=np.float32)
         
         # State covariance matrix (uncertainty in our estimate)
-        self.P = np.eye(4, dtype=np.float32) * 100.0
+        # Start with high uncertainty so filter quickly adapts to measurements
+        self.P = np.eye(4, dtype=np.float32) * 1000.0
         
         # Process noise covariance matrix
         # Models uncertainty in the motion model

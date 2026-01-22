@@ -28,11 +28,11 @@ class HeartTracker:
     """
     
     def __init__(self, 
-                 process_noise=5.0, 
-                 measurement_noise=15.0,
+                 process_noise=50.0, 
+                 measurement_noise=5.0,
                  sift_features=1000,
                  match_ratio=0.75,
-                 min_matches=8,
+                 min_matches=4,
                  constellation_radius=50):
         """
         Initialize the heart tracker.
@@ -486,11 +486,11 @@ def main():
     
     # Initialize tracker
     tracker = HeartTracker(
-        process_noise=5.0,
-        measurement_noise=15.0,
+        process_noise=50.0,
+        measurement_noise=5.0,
         sift_features=1000,
         match_ratio=0.75,
-        min_matches=8,
+        min_matches=4,
         constellation_radius=50
     )
     
