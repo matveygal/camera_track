@@ -34,28 +34,29 @@ def plot_csv(filename):
     times = np.array(times)
     distances = np.array(distances)
     
-    # Create smooth interpolated curve using cubic spline
+    # Apply Savitzky-Golay filter first to smooth the discrete steps
+    window = min(51, len(distances) if len(distances) % 2 == 1 else len(distances) - 1)
+    if window >= 5:
+        distances_filtered = savgol_filter(distances, window, 3)
+    else:
+        distances_filtered = distances
+    
+    # Now apply cubic spline interpolation on the pre-smoothed data
     # Generate more points for smoother visualization
-    time_smooth = np.linspace(times.min(), times.max(), len(times) * 10)
+    time_smooth = np.linspace(times.min(), times.max(), len(times) * 20)
     
     try:
-        # Cubic spline interpolation for smooth curve
-        spline = make_interp_spline(times, distances, k=3)
+        # Cubic spline on filtered data for ultra-smooth curve
+        spline = make_interp_spline(times, distances_filtered, k=3)
         distance_smooth = spline(time_smooth)
     except:
-        # Fallback to Savitzky-Golay filter if spline fails
-        window = min(11, len(distances) if len(distances) % 2 == 1 else len(distances) - 1)
-        if window >= 5:
-            distance_smooth = savgol_filter(distances, window, 3)
-            time_smooth = times
-        else:
-            distance_smooth = distances
-            time_smooth = times
+        distance_smooth = distances_filtered
+        time_smooth = times
     
     # Create plot with both raw and smooth data
     plt.figure(figsize=(12, 6))
-    plt.plot(times, distances, 'o', alpha=0.3, markersize=3, label='Raw data', color='lightblue')
-    plt.plot(time_smooth, distance_smooth, 'b-', linewidth=2, label='Smoothed')
+    plt.plot(times, distances, 'o', alpha=0.3, markersize=2, label='Raw data', color='lightgray')
+    plt.plot(time_smooth, distance_smooth, 'b-', linewidth=2.5, label='Smoothed')
     plt.xlabel('Time (seconds)', fontsize=12)
     plt.ylabel('Distance (mm)', fontsize=12)
     plt.title(f'Tracking Data: {Path(filename).name}', fontsize=14)
