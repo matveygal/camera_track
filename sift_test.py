@@ -31,6 +31,21 @@ def get_realsense_frame(pipeline):
         return None
     return np.asanyarray(color_frame.get_data())
 
+def preprocess_for_features(gray):
+    """Preprocess image to emphasize object structure over texture"""
+    # Apply CLAHE for better contrast
+    clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
+    enhanced = clahe.apply(gray)
+    
+    # Combine original with edge information to emphasize structure
+    edges = cv2.Canny(enhanced, 50, 150)
+    edges_dilated = cv2.dilate(edges, np.ones((3, 3), np.uint8), iterations=1)
+    
+    # Blend: 70% enhanced image + 30% edge map
+    blended = cv2.addWeighted(enhanced, 0.7, edges_dilated, 0.3, 0)
+    
+    return blended
+
 
 def draw_tracked_object(frame, corners, status="Tracking"):
     """Draw the detected object polygon and info"""
@@ -131,7 +146,7 @@ def track_object_in_video(video_path, output_path=None):
     cv2.destroyWindow("Live Preview - Position Object")
     
     # Let user select ROI
-    print("Select the object to track, then press ENTER or SPACE")
+    print("Select the object TIGHTLY (avoid background) - press ENTER or SPACE")
     roi = cv2.selectROI("Select Object", first_frame, fromCenter=False, showCrosshair=True)
     cv2.destroyWindow("Select Object")
     
@@ -144,6 +159,14 @@ def track_object_in_video(video_path, output_path=None):
     ref_img = first_frame[y:y+h, x:x+w]
     ref_gray = cv2.cvtColor(ref_img, cv2.COLOR_BGR2GRAY)
     
+    # Apply preprocessing to emphasize object structure
+    ref_gray_processed = preprocess_for_features(ref_gray)
+    
+    # Create a mask to focus on central region (reduce edge effects)
+    mask = np.zeros_like(ref_gray, dtype=np.uint8)
+    margin = min(w, h) // 8  # 12.5% margin
+    mask[margin:h-margin, margin:w-margin] = 255
+    
     # Store reference corners in reference image coordinate system
     ref_corners = np.float32([
         [0, 0],
@@ -155,7 +178,7 @@ def track_object_in_video(video_path, output_path=None):
     # Initialize feature detector - using SIFT for better rotation/scale invariance
     # Fallback to ORB if SIFT not available
     try:
-        detector = cv2.SIFT_create(nfeatures=3000, contrastThreshold=0.03)
+        detector = cv2.SIFT_create(nfeatures=3000, contrastThreshold=0.02, edgeThreshold=10)
         print("Using SIFT detector (best for rotation/scale)")
     except:
         detector = cv2.ORB_create(nfeatures=3000, 
@@ -165,8 +188,8 @@ def track_object_in_video(video_path, output_path=None):
                                    patchSize=31)
         print("Using ORB detector")
     
-    # Compute reference keypoints and descriptors
-    kp_ref, des_ref = detector.detectAndCompute(ref_gray, None)
+    # Compute reference keypoints and descriptors with mask and preprocessing
+    kp_ref, des_ref = detector.detectAndCompute(ref_gray_processed, mask)
     
     if des_ref is None or len(kp_ref) < 4:
         print("Error: Not enough features in reference image. Choose a more textured object.")
@@ -234,9 +257,10 @@ def track_object_in_video(video_path, output_path=None):
         
         frame_count += 1
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        gray_processed = preprocess_for_features(gray)
         
         # Detect features in current frame
-        kp, des = detector.detectAndCompute(gray, None)
+        kp, des = detector.detectAndCompute(gray_processed, None)
         
         corners = None
         status = "Tracking"
@@ -272,8 +296,9 @@ def track_object_in_video(video_path, output_path=None):
                     # Count inliers
                     inliers = np.sum(mask)
                     
-                    # Require sufficient inliers (at least 30% of matches)
-                    min_inliers = max(6, int(len(good_matches) * 0.3))
+                    # More lenient adaptive inlier threshold
+                    # Accept if: at least 4 inliers OR at least 25% of matches OR at least 10 inliers
+                    min_inliers = max(4, min(10, int(len(good_matches) * 0.25)))
                     if inliers >= min_inliers:
                         # Transform reference corners to current frame
                         corners = cv2.perspectiveTransform(ref_corners, H)
@@ -303,17 +328,18 @@ def track_object_in_video(video_path, output_path=None):
                         lost_frames = 0
                         frames_since_update += 1
                         
-                        # Update reference template if tracking is very stable
-                        if inliers > len(good_matches) * 0.7 and frames_since_update > update_interval:
+                        # Update reference template if tracking is stable (more aggressive)
+                        if inliers > len(good_matches) * 0.6 and frames_since_update > update_interval:
                             # Extract current view of tracked object
                             src_rect = np.array([[0, 0], [w-1, 0], [w-1, h-1], [0, h-1]], dtype=np.float32)
                             M = cv2.getPerspectiveTransform(corners.astype(np.float32), src_rect)
                             warped = cv2.warpPerspective(gray, M, (w, h))
+                            warped_processed = preprocess_for_features(warped)
                             
-                            # Recompute features on warped image
-                            kp_new, des_new = detector.detectAndCompute(warped, None)
-                            if des_new is not None and len(kp_new) >= len(kp_ref) * 0.5:
-                                # Blend old and new descriptors
+                            # Recompute features on warped image with mask
+                            kp_new, des_new = detector.detectAndCompute(warped_processed, mask)
+                            if des_new is not None and len(kp_new) >= len(kp_ref) * 0.4:
+                                # Update descriptors
                                 kp_ref = kp_new
                                 des_ref = des_new
                                 frames_since_update = 0
@@ -368,7 +394,7 @@ def track_object_in_video(video_path, output_path=None):
         cv2.putText(vis_frame, f"Frame: {frame_count}", (width - 200, 30),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
         
-        # Store current frame for optical flow
+        # Store current frame for optical flow (use original gray, not processed)
         prev_gray = gray.copy()
         
         # Display
