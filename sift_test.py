@@ -80,22 +80,55 @@ def track_object_in_video(video_path, output_path=None):
         if not success:
             return
         use_realsense = True
-        # Get first frame from RealSense
-        first_frame = get_realsense_frame(pipeline)
-        if first_frame is None:
-            print("Error: Cannot read first frame from RealSense")
-            pipeline.stop()
-            return
     else:
         cap = cv2.VideoCapture(video_path)
         if not cap.isOpened():
             print(f"Error: Cannot open video {video_path}")
             return
-        # Read first frame from video
-        ret, first_frame = cap.read()
-        if not ret:
-            print("Error: Cannot read first frame")
+    
+    # Show live preview and wait for user to press a key to capture
+    print("Live preview starting...")
+    print("Position your object, then press SPACE or 's' to capture reference frame")
+    print("Press 'q' to quit")
+    
+    first_frame = None
+    while True:
+        # Read frame from appropriate source
+        if use_realsense:
+            frame = get_realsense_frame(pipeline)
+            if frame is None:
+                print("Error: Cannot read frame from RealSense")
+                pipeline.stop()
+                return
+        else:
+            ret, frame = cap.read()
+            if not ret:
+                print("Error: Cannot read frame")
+                return
+        
+        # Display preview
+        preview = frame.copy()
+        cv2.putText(preview, "Press SPACE or 's' to capture", (10, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+        cv2.putText(preview, "Press 'q' to quit", (10, 60),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+        cv2.imshow("Live Preview - Position Object", preview)
+        
+        key = cv2.waitKey(1) & 0xFF
+        if key == ord(' ') or key == ord('s'):
+            first_frame = frame.copy()
+            print("Frame captured!")
+            break
+        elif key == ord('q'):
+            print("Cancelled by user")
+            if use_realsense:
+                pipeline.stop()
+            else:
+                cap.release()
+            cv2.destroyAllWindows()
             return
+    
+    cv2.destroyWindow("Live Preview - Position Object")
     
     # Let user select ROI
     print("Select the object to track, then press ENTER or SPACE")
