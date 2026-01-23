@@ -1,5 +1,36 @@
 import cv2
 import numpy as np
+import pyrealsense2 as rs
+
+import cv2
+import numpy as np
+import pyrealsense2 as rs
+
+def init_realsense_camera():
+    """Initialize RealSense camera for RGB streaming only"""
+    pipeline = rs.pipeline()
+    config = rs.config()
+    
+    # Enable RGB stream only (depth sensors are broken)
+    config.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)
+    
+    try:
+        profile = pipeline.start(config)
+        print("RealSense camera initialized successfully")
+        print("RGB stream: 640x480 @ 30fps")
+        return pipeline, True
+    except Exception as e:
+        print(f"Failed to initialize RealSense camera: {e}")
+        return None, False
+
+def get_realsense_frame(pipeline):
+    """Get a single RGB frame from RealSense camera"""
+    frames = pipeline.wait_for_frames()
+    color_frame = frames.get_color_frame()
+    if not color_frame:
+        return None
+    return np.asanyarray(color_frame.get_data())
+
 
 def draw_tracked_object(frame, corners, status="Tracking"):
     """Draw the detected object polygon and info"""
@@ -35,18 +66,36 @@ def track_object_in_video(video_path, output_path=None):
     """
     Track an object in a video using ORB + homography.
     User selects ROI in first frame.
+    
+    Args:
+        video_path: Path to video file, 0 for webcam, or 'realsense' for RealSense camera
+        output_path: Path to save output video (optional)
     """
-    cap = cv2.VideoCapture(video_path)
+    # Initialize video source
+    use_realsense = False
+    pipeline = None
     
-    if not cap.isOpened():
-        print(f"Error: Cannot open video {video_path}")
-        return
-    
-    # Read first frame
-    ret, first_frame = cap.read()
-    if not ret:
-        print("Error: Cannot read first frame")
-        return
+    if video_path == 'realsense':
+        pipeline, success = init_realsense_camera()
+        if not success:
+            return
+        use_realsense = True
+        # Get first frame from RealSense
+        first_frame = get_realsense_frame(pipeline)
+        if first_frame is None:
+            print("Error: Cannot read first frame from RealSense")
+            pipeline.stop()
+            return
+    else:
+        cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened():
+            print(f"Error: Cannot open video {video_path}")
+            return
+        # Read first frame from video
+        ret, first_frame = cap.read()
+        if not ret:
+            print("Error: Cannot read first frame")
+            return
     
     # Let user select ROI
     print("Select the object to track, then press ENTER or SPACE")
@@ -103,9 +152,13 @@ def track_object_in_video(video_path, output_path=None):
         use_sift = False
     
     # Video writer setup
-    fps = int(cap.get(cv2.CAP_PROP_FPS))
-    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    if use_realsense:
+        fps = 30
+        height, width = first_frame.shape[:2]
+    else:
+        fps = int(cap.get(cv2.CAP_PROP_FPS))
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     
     if output_path:
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
@@ -129,15 +182,22 @@ def track_object_in_video(video_path, output_path=None):
     velocity = np.zeros((4, 2))  # Velocity for each corner
     alpha_velocity = 0.3  # Smoothing factor for velocity
     
-    # Reset to start
-    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+    # Reset video to start (only for file-based video)
+    if not use_realsense:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
     
     print("Processing video... Press 'q' to quit early")
     
     while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
+        # Read frame from appropriate source
+        if use_realsense:
+            frame = get_realsense_frame(pipeline)
+            if frame is None:
+                break
+        else:
+            ret, frame = cap.read()
+            if not ret:
+                break
         
         frame_count += 1
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -289,7 +349,11 @@ def track_object_in_video(video_path, output_path=None):
             print("Interrupted by user")
             break
     
-    cap.release()
+    # Cleanup
+    if use_realsense:
+        pipeline.stop()
+    else:
+        cap.release()
     if output_path:
         out.release()
     cv2.destroyAllWindows()
@@ -303,13 +367,13 @@ def track_object_in_video(video_path, output_path=None):
 if __name__ == "__main__":
     print("=== ORB + Homography Object Tracker ===")
     print("This script will:")
-    print("1. Open your video")
+    print("1. Open your camera/video")
     print("2. Let you draw a box around the object in the first frame")
     print("3. Track that object through the video")
     print("4. Show position, rotation, and recovery from occlusion\n")
     
-    # Change these paths for your use case
-    VIDEO_INPUT = "videos/video_20260123_101224.avi"  # Use 0 for webcam, or "path/to/video.mp4"
+    # Change these settings for your use case
+    VIDEO_INPUT = "realsense"  # Use "realsense" for RealSense camera, 0 for webcam, or "path/to/video.mp4"
     VIDEO_OUTPUT = "tracked_output.mp4"  # Set to None to disable saving
     
     track_object_in_video(VIDEO_INPUT, VIDEO_OUTPUT)
