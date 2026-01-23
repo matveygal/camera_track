@@ -73,12 +73,12 @@ def track_object_in_video(video_path, output_path=None):
     # Initialize feature detector - using SIFT for better rotation/scale invariance
     # Fallback to ORB if SIFT not available
     try:
-        detector = cv2.SIFT_create(nfeatures=2000)
+        detector = cv2.SIFT_create(nfeatures=3000, contrastThreshold=0.03)
         print("Using SIFT detector (best for rotation/scale)")
     except:
-        detector = cv2.ORB_create(nfeatures=2000, 
+        detector = cv2.ORB_create(nfeatures=3000, 
                                    scaleFactor=1.2, 
-                                   nlevels=8, 
+                                   nlevels=10, 
                                    edgeThreshold=10,
                                    patchSize=31)
         print("Using ORB detector")
@@ -117,6 +117,18 @@ def track_object_in_video(video_path, output_path=None):
     last_H = None  # Store last homography for smoothing
     corner_history = []  # For temporal smoothing
     
+    # Optical flow backup
+    prev_gray = None
+    flow_points = None
+    
+    # Template update mechanism (careful to avoid drift)
+    frames_since_update = 0
+    update_interval = 30  # Update template every N frames if tracking is good
+    
+    # Velocity-based prediction
+    velocity = np.zeros((4, 2))  # Velocity for each corner
+    alpha_velocity = 0.3  # Smoothing factor for velocity
+    
     # Reset to start
     cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
     
@@ -136,16 +148,19 @@ def track_object_in_video(video_path, output_path=None):
         corners = None
         status = "Tracking"
         
+        # Adaptive ratio threshold - more lenient when struggling
+        ratio_threshold = 0.85 if lost_frames > 3 else 0.8
+        
         if des is not None and len(kp) >= 4:
             # Match descriptors
             matches = matcher.knnMatch(des_ref, des, k=2)
             
-            # Apply Lowe's ratio test (more lenient for better recall)
+            # Apply Lowe's ratio test (adaptive threshold)
             good_matches = []
             for match_pair in matches:
                 if len(match_pair) == 2:
                     m, n = match_pair
-                    if m.distance < 0.8 * n.distance:  # More lenient ratio
+                    if m.distance < ratio_threshold * n.distance:
                         good_matches.append(m)
             
             # Need at least 6 matches for more robust homography
@@ -185,20 +200,64 @@ def track_object_in_video(video_path, output_path=None):
                             stacked = np.stack(recent, axis=0)
                             corners = np.average(stacked, axis=0, weights=weights)
                         
+                        # Update velocity for prediction
+                        if last_corners is not None:
+                            new_velocity = corners - last_corners
+                            velocity = alpha_velocity * new_velocity + (1 - alpha_velocity) * velocity
+                        
                         last_corners = corners
                         last_H = H
                         lost_frames = 0
-                        status = f"Tracking ({inliers}/{len(good_matches)} inliers)"
+                        frames_since_update += 1
+                        
+                        # Update reference template if tracking is very stable
+                        if inliers > len(good_matches) * 0.7 and frames_since_update > update_interval:
+                            # Extract current view of tracked object
+                            src_rect = np.array([[0, 0], [w-1, 0], [w-1, h-1], [0, h-1]], dtype=np.float32)
+                            M = cv2.getPerspectiveTransform(corners.astype(np.float32), src_rect)
+                            warped = cv2.warpPerspective(gray, M, (w, h))
+                            
+                            # Recompute features on warped image
+                            kp_new, des_new = detector.detectAndCompute(warped, None)
+                            if des_new is not None and len(kp_new) >= len(kp_ref) * 0.5:
+                                # Blend old and new descriptors
+                                kp_ref = kp_new
+                                des_ref = des_new
+                                frames_since_update = 0
+                                status = f"Tracking ({inliers}/{len(good_matches)} inliers) [UPDATED]"
+                            else:
+                                status = f"Tracking ({inliers}/{len(good_matches)} inliers)"
+                        else:
+                            status = f"Tracking ({inliers}/{len(good_matches)} inliers)"
+                        
+                        # Store points for optical flow backup
+                        flow_points = corners.astype(np.float32).reshape(-1, 1, 2)
         
-        # If no good detection, use prediction or mark as lost
+        # If no good detection, try optical flow backup or prediction
+        if corners is None and prev_gray is not None and flow_points is not None and last_corners is not None:
+            # Try optical flow as backup
+            try:
+                new_points, status_flow, _ = cv2.calcOpticalFlowPyrLK(
+                    prev_gray, gray, flow_points, None,
+                    winSize=(21, 21), maxLevel=3,
+                    criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 30, 0.01)
+                )
+                
+                if new_points is not None and np.all(status_flow == 1):
+                    corners = new_points.reshape(-1, 2)
+                    flow_points = new_points
+                    status = f"Optical Flow Backup"
+            except:
+                pass
+        
+        # If still no detection, use velocity-based prediction or mark as lost
         if corners is None:
             lost_frames += 1
-            if lost_frames < 15 and last_corners is not None:
-                # Try to predict using last homography if available
-                if lost_frames < 5 and last_H is not None:
-                    # Use last known homography as prediction
-                    corners = last_corners
-                    status = f"Predicting ({lost_frames} frames)"
+            if lost_frames < 20 and last_corners is not None:
+                # Use velocity-based prediction
+                if lost_frames < 8 and np.any(velocity != 0):
+                    corners = last_corners + velocity * lost_frames
+                    status = f"Velocity Prediction ({lost_frames} frames)"
                 else:
                     # Keep showing last known position
                     corners = last_corners
@@ -206,6 +265,7 @@ def track_object_in_video(video_path, output_path=None):
             else:
                 corners = None
                 corner_history.clear()  # Clear history on complete loss
+                velocity = np.zeros((4, 2))  # Reset velocity
         
         # Visualize
         vis_frame = frame.copy()
@@ -214,6 +274,9 @@ def track_object_in_video(video_path, output_path=None):
         # Show frame counter
         cv2.putText(vis_frame, f"Frame: {frame_count}", (width - 200, 30),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+        
+        # Store current frame for optical flow
+        prev_gray = gray.copy()
         
         # Display
         cv2.imshow("Object Tracking", vis_frame)
