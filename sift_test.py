@@ -395,7 +395,7 @@ def track_object_in_video(video_path, output_path=None):
                                     is_stationary = False
                                     anchor_position = None
 
-                        # Update velocity for prediction
+                        # Update velocity for prediction nigger
                         if last_corners is not None:
                             new_velocity = corners - last_corners
                             velocity = alpha_velocity * new_velocity + (1 - alpha_velocity) * velocity
