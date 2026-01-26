@@ -426,6 +426,15 @@ def track_object_in_video(video_path, output_path=None):
         # Visualize
         vis_frame = frame.copy()
         vis_frame = draw_tracked_object(vis_frame, corners, status)
+
+        # Plot and log corner coordinates
+        if corners is not None:
+            for idx, pt in enumerate(corners):
+                cv2.putText(vis_frame, f"{idx}:({int(pt[0])},{int(pt[1])})", (int(pt[0])+5, int(pt[1])+20),
+                            cv2.FONT_HERSHEY_PLAIN, 1.0, (0, 255, 255), 1)
+            # Log to file
+            with open("corners_log.txt", "a") as f:
+                f.write(f"Frame {frame_count}: " + ", ".join([f"({pt[0]:.1f},{pt[1]:.1f})" for pt in corners]) + "\n")
         
         # Show frame counter
         cv2.putText(vis_frame, f"Frame: {frame_count}", (width - 200, 30),
