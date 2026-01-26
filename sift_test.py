@@ -346,8 +346,16 @@ def track_object_in_video(video_path, output_path=None):
                         if last_corners is not None:
                             max_move = 10.0
                             delta = corners - last_corners
-                            delta = np.clip(delta, -max_move, max_move)
-                            corners = last_corners + delta
+                            # If a corner moves too far, interpolate from other corners
+                            for i in range(4):
+                                if np.linalg.norm(delta[i]) > 20.0:
+                                    # Interpolate from other three corners
+                                    others = [corners[j] for j in range(4) if j != i]
+                                    corners[i] = np.mean(others, axis=0)
+                                else:
+                                    # Otherwise, clamp movement
+                                    delta[i] = np.clip(delta[i], -max_move, max_move)
+                                    corners[i] = last_corners[i] + delta[i]
                         # Update velocity for prediction
                         if last_corners is not None:
                             new_velocity = corners - last_corners
