@@ -315,6 +315,15 @@ def track_object_in_video(video_path, output_path=None):
                         orig_w = np.linalg.norm(ref_corners[0] - ref_corners[1])
                         orig_h = np.linalg.norm(ref_corners[1] - ref_corners[2])
                         center, angle = get_center_and_angle(corners)
+                        # Gentle spring to initial center
+                        initial_center = np.mean(ref_corners, axis=0)
+                        drift = center - initial_center
+                        max_drift = 10.0
+                        if np.linalg.norm(drift) > max_drift:
+                            center = initial_center + drift * (max_drift / np.linalg.norm(drift))
+                        else:
+                            # Optionally, apply a weak spring always
+                            center = center * 0.9 + initial_center * 0.1
                         R = np.array([
                             [np.cos(angle), -np.sin(angle)],
                             [np.sin(angle),  np.cos(angle)]
