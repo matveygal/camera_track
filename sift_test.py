@@ -227,6 +227,11 @@ def track_object_in_video(video_path, output_path=None):
     velocity = np.zeros((4, 2))  # Velocity for each corner
     alpha_velocity = 0.3  # Smoothing factor for velocity
     
+    # Bundle adjustment: store recent matches for periodic refinement
+    match_buffer = []  # Store (src_pts, dst_pts) tuples
+    bundle_interval = 30  # Re-estimate homography every N frames
+    canonical_H = None  # Refined homography from bundle adjustment
+    
     # Reset video to start (only for file-based video)
     if not use_realsense:
         cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
@@ -284,6 +289,36 @@ def track_object_in_video(video_path, output_path=None):
                     # Count inliers
                     inliers = np.sum(mask)
                     
+                    # Store inlier matches for bundle adjustment
+                    inlier_indices = mask.ravel() == 1
+                    inlier_src = src_pts[inlier_indices]
+                    inlier_dst = dst_pts[inlier_indices]
+                    match_buffer.append((inlier_src, inlier_dst))
+                    if len(match_buffer) > bundle_interval:
+                        match_buffer.pop(0)
+                    
+                    # Bundle adjustment: every N frames, pool matches and re-estimate
+                    if frame_count % bundle_interval == 0 and len(match_buffer) >= 10:
+                        # Pool all inlier matches from buffer
+                        all_src = np.vstack([src for src, dst in match_buffer])
+                        all_dst = np.vstack([dst for src, dst in match_buffer])
+                        
+                        # Compute refined homography from pooled matches
+                        H_refined, mask_refined = cv2.findHomography(
+                            all_src, all_dst, cv2.RANSAC,
+                            ransacReprojThreshold=5.0,  # Stricter for pooled data
+                            maxIters=3000,
+                            confidence=0.999
+                        )
+                        
+                        if H_refined is not None:
+                            canonical_H = H_refined
+                            status = f"Tracking ({inliers}/{len(good_matches)} inliers) [BUNDLE]"
+                    
+                    # Use canonical homography if available, otherwise current H
+                    if canonical_H is not None:
+                        H = canonical_H
+                    
                     # Require sufficient inliers (at least 30% of matches)
                     min_inliers = max(6, int(len(good_matches) * 0.3))
                     if inliers >= min_inliers:
@@ -315,15 +350,6 @@ def track_object_in_video(video_path, output_path=None):
                         orig_w = np.linalg.norm(ref_corners[0] - ref_corners[1])
                         orig_h = np.linalg.norm(ref_corners[1] - ref_corners[2])
                         center, angle = get_center_and_angle(corners)
-                        # Gentle spring to initial center
-                        initial_center = np.mean(ref_corners, axis=0)
-                        drift = center - initial_center
-                        max_drift = 10.0
-                        if np.linalg.norm(drift) > max_drift:
-                            center = initial_center + drift * (max_drift / np.linalg.norm(drift))
-                        else:
-                            # Optionally, apply a weak spring always
-                            center = center * 0.9 + initial_center * 0.1
                         R = np.array([
                             [np.cos(angle), -np.sin(angle)],
                             [np.sin(angle),  np.cos(angle)]
@@ -366,7 +392,10 @@ def track_object_in_video(video_path, output_path=None):
                             else:
                                 status = f"Tracking ({inliers}/{len(good_matches)} inliers)"
                         else:
-                            status = f"Tracking ({inliers}/{len(good_matches)} inliers)"
+                            if canonical_H is not None and frame_count % bundle_interval != 0:
+                                status = f"Tracking ({inliers}/{len(good_matches)} inliers) [CANONICAL]"
+                            else:
+                                status = f"Tracking ({inliers}/{len(good_matches)} inliers)"
                         
                         # Store points for optical flow backup
                         flow_points = corners.astype(np.float32).reshape(-1, 1, 2)
