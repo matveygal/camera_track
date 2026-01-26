@@ -315,9 +315,7 @@ def track_object_in_video(video_path, output_path=None):
                             canonical_H = H_refined
                             status = f"Tracking ({inliers}/{len(good_matches)} inliers) [BUNDLE]"
                     
-                    # Use canonical homography if available, otherwise current H
-                    if canonical_H is not None:
-                        H = canonical_H
+                    # Use current H for tracking (don't lag behind with canonical)
                     
                     # Require sufficient inliers (at least 30% of matches)
                     min_inliers = max(6, int(len(good_matches) * 0.3))
@@ -392,10 +390,7 @@ def track_object_in_video(video_path, output_path=None):
                             else:
                                 status = f"Tracking ({inliers}/{len(good_matches)} inliers)"
                         else:
-                            if canonical_H is not None and frame_count % bundle_interval != 0:
-                                status = f"Tracking ({inliers}/{len(good_matches)} inliers) [CANONICAL]"
-                            else:
-                                status = f"Tracking ({inliers}/{len(good_matches)} inliers)"
+                            status = f"Tracking ({inliers}/{len(good_matches)} inliers)"
                         
                         # Store points for optical flow backup
                         flow_points = corners.astype(np.float32).reshape(-1, 1, 2)
