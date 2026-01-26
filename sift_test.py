@@ -1,10 +1,12 @@
 import cv2
 import numpy as np
 import pyrealsense2 as rs
+import csv
 
 import cv2
 import numpy as np
 import pyrealsense2 as rs
+import csv
 
 def init_realsense_camera():
     """Initialize RealSense camera for RGB streaming only"""
@@ -426,15 +428,15 @@ def track_object_in_video(video_path, output_path=None):
         # Visualize
         vis_frame = frame.copy()
         vis_frame = draw_tracked_object(vis_frame, corners, status)
-
-        # Plot and log corner coordinates
+        # Overlay corner coordinates
         if corners is not None:
             for idx, pt in enumerate(corners):
-                cv2.putText(vis_frame, f"{idx}:({int(pt[0])},{int(pt[1])})", (int(pt[0])+5, int(pt[1])+20),
-                            cv2.FONT_HERSHEY_PLAIN, 1.0, (0, 255, 255), 1)
-            # Log to file
-            with open("corners_log.txt", "a") as f:
-                f.write(f"Frame {frame_count}: " + ", ".join([f"({pt[0]:.1f},{pt[1]:.1f})" for pt in corners]) + "\n")
+                cv2.circle(vis_frame, tuple(np.round(pt).astype(int)), 6, (0, 0, 255), -1)
+                cv2.putText(vis_frame, f'{idx}', tuple(np.round(pt).astype(int) + np.array([8, -8])), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+            # Log to CSV
+            csv_writer.writerow([frame_count] + [f'{c[0]:.2f}' for c in corners] + [f'{c[1]:.2f}' for c in corners])
+        else:
+            csv_writer.writerow([frame_count] + ['']*8)
         
         # Show frame counter
         cv2.putText(vis_frame, f"Frame: {frame_count}", (width - 200, 30),
@@ -466,6 +468,7 @@ def track_object_in_video(video_path, output_path=None):
     print(f"\nProcessing complete: {frame_count} frames")
     if output_path:
         print(f"Output saved to: {output_path}")
+    log_file.close()
 
 
 # Example usage
