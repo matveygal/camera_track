@@ -348,6 +348,16 @@ def track_object_in_video(video_path, output_path=None):
                         orig_w = np.linalg.norm(ref_corners[0] - ref_corners[1])
                         orig_h = np.linalg.norm(ref_corners[1] - ref_corners[2])
                         center, angle = get_center_and_angle(corners)
+                        
+                        # Dead zone: if movement is tiny, assume it's noise and freeze position
+                        dead_zone_threshold = 0.8  # pixels
+                        if last_corners is not None:
+                            last_center = np.mean(last_corners, axis=0)
+                            movement = np.linalg.norm(center - last_center)
+                            if movement < dead_zone_threshold:
+                                # Lock to previous center, but allow rotation
+                                center = last_center
+                        
                         R = np.array([
                             [np.cos(angle), -np.sin(angle)],
                             [np.sin(angle),  np.cos(angle)]
