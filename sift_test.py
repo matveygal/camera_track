@@ -304,11 +304,36 @@ def track_object_in_video(video_path, output_path=None):
                         # If inliers are too low, freeze corners
                         if inliers < 8:
                             corners = last_corners if last_corners is not None else corners
+
+                        # Rigid box constraint: only allow rotation and translation, fix size/shape
+                        def get_center_and_angle(pts):
+                            center = np.mean(pts, axis=0)
+                            dx = pts[1][0] - pts[0][0]
+                            dy = pts[1][1] - pts[0][1]
+                            angle = np.arctan2(dy, dx)
+                            return center, angle
+                        orig_w = np.linalg.norm(ref_corners[0] - ref_corners[1])
+                        orig_h = np.linalg.norm(ref_corners[1] - ref_corners[2])
+                        center, angle = get_center_and_angle(corners)
+                        R = np.array([
+                            [np.cos(angle), -np.sin(angle)],
+                            [np.sin(angle),  np.cos(angle)]
+                        ])
+                        half_w = orig_w / 2
+                        half_h = orig_h / 2
+                        box = np.array([
+                            [-half_w, -half_h],
+                            [ half_w, -half_h],
+                            [ half_w,  half_h],
+                            [-half_w,  half_h]
+                        ])
+                        corners = (box @ R.T) + center
+
                         # Update velocity for prediction
                         if last_corners is not None:
                             new_velocity = corners - last_corners
                             velocity = alpha_velocity * new_velocity + (1 - alpha_velocity) * velocity
-                        
+
                         last_corners = corners
                         last_H = H
                         lost_frames = 0
