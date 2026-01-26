@@ -288,7 +288,7 @@ def track_object_in_video(video_path, output_path=None):
                     min_inliers = max(6, int(len(good_matches) * 0.3))
                     if inliers >= min_inliers:
                         # Transform reference corners to current frame
-                        corners = cv2.perspectiveTransform(ref_corners, H)
+                        corners = cv2.perspectiveTransform(ref_corners.reshape(-1, 1, 2), H)
                         corners = corners.reshape(-1, 2)
                         
                         # Temporal smoothing with history
