@@ -307,15 +307,47 @@ def track_object_in_video(video_path, output_path=None):
                         # Clamp side lengths and angles to within 20% of initial
                         sides = np.clip(sides, 0.8*init_sides, 1.2*init_sides)
                         angles = np.clip(angles, 0.8*init_angles, 1.2*init_angles)
-                        # Reconstruct corners (approximate, keep first point fixed)
-                        new_corners = [corners[0]]
-                        for i in range(3):
-                            direction = corners[(i+1)%4] - corners[i]
-                            direction = direction / (np.linalg.norm(direction)+1e-6)
-                            next_pt = new_corners[-1] + direction * sides[i]
-                            new_corners.append(next_pt)
-                        corners = np.array(new_corners)
-                        
+                        # Area and aspect ratio constraints
+                        def quad_area(pts):
+                            return 0.5 * abs(
+                                pts[0,0]*pts[1,1] + pts[1,0]*pts[2,1] + pts[2,0]*pts[3,1] + pts[3,0]*pts[0,1]
+                                - pts[1,0]*pts[0,1] - pts[2,0]*pts[1,1] - pts[3,0]*pts[2,1] - pts[0,0]*pts[3,1]
+                            )
+                        initial_area = quad_area(ref_corners)
+                        area = quad_area(corners)
+                        min_area = 0.7 * initial_area
+                        max_area = 1.3 * initial_area
+                        if area < min_area or area > max_area:
+                            scale = np.sqrt(initial_area / (area + 1e-6))
+                            center = np.mean(corners, axis=0)
+                            corners = (corners - center) * scale + center
+                        # Aspect ratio constraint
+                        def aspect_ratio(pts):
+                            w = (np.linalg.norm(pts[0]-pts[1]) + np.linalg.norm(pts[2]-pts[3])) / 2
+                            h = (np.linalg.norm(pts[1]-pts[2]) + np.linalg.norm(pts[3]-pts[0])) / 2
+                            return w / (h + 1e-6)
+                        initial_ar = aspect_ratio(ref_corners)
+                        ar = aspect_ratio(corners)
+                        if ar < 0.7*initial_ar or ar > 1.3*initial_ar:
+                            # Adjust width/height to restore aspect ratio
+                            center = np.mean(corners, axis=0)
+                            scale_w = np.sqrt(initial_ar/ar) if ar > initial_ar else 1.0
+                            scale_h = np.sqrt(ar/initial_ar) if ar < initial_ar else 1.0
+                            for i in range(4):
+                                vec = corners[i] - center
+                                if i % 2 == 0:
+                                    vec[0] *= scale_w
+                                    vec[1] *= scale_h
+                                else:
+                                    vec[0] *= scale_w
+                                    vec[1] *= scale_h
+                                corners[i] = center + vec
+                        # Limit per-corner movement (max 10px per frame)
+                        if last_corners is not None:
+                            max_move = 10.0
+                            delta = corners - last_corners
+                            delta = np.clip(delta, -max_move, max_move)
+                            corners = last_corners + delta
                         # Update velocity for prediction
                         if last_corners is not None:
                             new_velocity = corners - last_corners
