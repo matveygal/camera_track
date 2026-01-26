@@ -235,167 +235,162 @@ def track_object_in_video(video_path, output_path=None):
     
     print("Processing video... Press 'q' to quit early")
     
-    # For logging corner coordinates
-    log_file = open('corner_log.csv', 'w', newline='')
-    csv_writer = csv.writer(log_file)
-    csv_writer.writerow(['frame', 'corner0_x', 'corner0_y', 'corner1_x', 'corner1_y', 'corner2_x', 'corner2_y', 'corner3_x', 'corner3_y'])
-    try:
-        while True:
-            # Read frame from appropriate source
-            if use_realsense:
-                frame = get_realsense_frame(pipeline)
-                if frame is None:
-                    break
-            else:
-                ret, frame = cap.read()
-                if not ret:
-                    break
+    while True:
+        # Read frame from appropriate source
+        if use_realsense:
+            frame = get_realsense_frame(pipeline)
+            if frame is None:
+                break
+        else:
+            ret, frame = cap.read()
+            if not ret:
+                break
+        
+        frame_count += 1
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        
+        # Detect features in current frame
+        kp, des = detector.detectAndCompute(gray, None)
+        
+        corners = None
+        status = "Tracking"
+        
+        # Adaptive ratio threshold - more lenient when struggling
+        ratio_threshold = 0.85 if lost_frames > 3 else 0.8
+        
+        if des is not None and len(kp) >= 4:
+            # Match descriptors
+            matches = matcher.knnMatch(des_ref, des, k=2)
             
-            frame_count += 1
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            # Apply Lowe's ratio test (adaptive threshold)
+            good_matches = []
+            for match_pair in matches:
+                if len(match_pair) == 2:
+                    m, n = match_pair
+                    if m.distance < ratio_threshold * n.distance:
+                        good_matches.append(m)
             
-            # Detect features in current frame
-            kp, des = detector.detectAndCompute(gray, None)
-            
-            corners = None
-            status = "Tracking"
-            
-            # Adaptive ratio threshold - more lenient when struggling
-            ratio_threshold = 0.85 if lost_frames > 3 else 0.8
-            
-            if des is not None and len(kp) >= 4:
-                # Match descriptors
-                matches = matcher.knnMatch(des_ref, des, k=2)
+            # Need at least 6 matches for more robust homography
+            if len(good_matches) >= 6:
+                # Extract matched point coordinates
+                src_pts = np.float32([kp_ref[m.queryIdx].pt for m in good_matches]).reshape(-1, 1, 2)
+                dst_pts = np.float32([kp[m.trainIdx].pt for m in good_matches]).reshape(-1, 1, 2)
                 
-                # Apply Lowe's ratio test (adaptive threshold)
-                good_matches = []
-                for match_pair in matches:
-                    if len(match_pair) == 2:
-                        m, n = match_pair
-                        if m.distance < ratio_threshold * n.distance:
-                            good_matches.append(m)
+                # Find homography with more lenient RANSAC
+                H, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 
+                                             ransacReprojThreshold=8.0,  # More lenient
+                                             maxIters=2000,  # More iterations
+                                             confidence=0.995)
                 
-                # Need at least 6 matches for more robust homography
-                if len(good_matches) >= 6:
-                    # Extract matched point coordinates
-                    src_pts = np.float32([kp_ref[m.queryIdx].pt for m in good_matches]).reshape(-1, 1, 2)
-                    dst_pts = np.float32([kp[m.trainIdx].pt for m in good_matches]).reshape(-1, 1, 2)
+                if H is not None:
+                    # Count inliers
+                    inliers = np.sum(mask)
                     
-                    # Find homography with more lenient RANSAC
-                    H, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 
-                                                 ransacReprojThreshold=8.0,  # More lenient
-                                                 maxIters=2000,  # More iterations
-                                                 confidence=0.995)
-                    
-                    if H is not None:
-                        # Count inliers
-                        inliers = np.sum(mask)
+                    # Require sufficient inliers (at least 30% of matches)
+                    min_inliers = max(6, int(len(good_matches) * 0.3))
+                    if inliers >= min_inliers:
+                        # Transform reference corners to current frame
+                        corners = cv2.perspectiveTransform(ref_corners.reshape(-1, 1, 2), H)
+                        corners = corners.reshape(-1, 2)
                         
-                        # Require sufficient inliers (at least 30% of matches)
-                        min_inliers = max(6, int(len(good_matches) * 0.3))
-                        if inliers >= min_inliers:
-                            # Transform reference corners to current frame
-                            corners = cv2.perspectiveTransform(ref_corners.reshape(-1, 1, 2), H)
-                            corners = corners.reshape(-1, 2)
-                            
-                            # Temporal smoothing with history
-                            corner_history.append(corners.copy())
-                            if len(corner_history) > 5:
-                                corner_history.pop(0)
-                            # Weighted moving average for stability
-                            if len(corner_history) >= 3:
-                                recent = corner_history[-3:]
-                                weights = np.array([0.2, 0.3, 0.5])
-                                stacked = np.stack(recent, axis=0)
-                                corners = np.average(stacked, axis=0, weights=weights)
-                            # Geometric regularization: keep shape close to initial
-                            sides, angles = get_sides_and_angles(corners)
-                            init_sides, init_angles = initial_shape
-                            # Clamp side lengths and angles to within 20% of initial
-                            sides = np.clip(sides, 0.8*init_sides, 1.2*init_sides)
-                            angles = np.clip(angles, 0.8*init_angles, 1.2*init_angles)
-                            # Area and aspect ratio constraints
-                            def quad_area(pts):
-                                return 0.5 * abs(
-                                    pts[0,0]*pts[1,1] + pts[1,0]*pts[2,1] + pts[2,0]*pts[3,1] + pts[3,0]*pts[0,1]
-                                    - pts[1,0]*pts[0,1] - pts[2,0]*pts[1,1] - pts[3,0]*pts[2,1] - pts[0,0]*pts[3,1]
-                                )
-                            initial_area = quad_area(ref_corners)
-                            area = quad_area(corners)
-                            min_area = 0.7 * initial_area
-                            max_area = 1.3 * initial_area
-                            if area < min_area or area > max_area:
-                                scale = np.sqrt(initial_area / (area + 1e-6))
-                                center = np.mean(corners, axis=0)
-                                corners = (corners - center) * scale + center
-                            # Aspect ratio constraint
-                            def aspect_ratio(pts):
-                                w = (np.linalg.norm(pts[0]-pts[1]) + np.linalg.norm(pts[2]-pts[3])) / 2
-                                h = (np.linalg.norm(pts[1]-pts[2]) + np.linalg.norm(pts[3]-pts[0])) / 2
-                                return w / (h + 1e-6)
-                            initial_ar = aspect_ratio(ref_corners)
-                            ar = aspect_ratio(corners)
-                            if ar < 0.7*initial_ar or ar > 1.3*initial_ar:
-                                # Adjust width/height to restore aspect ratio
-                                center = np.mean(corners, axis=0)
-                                scale_w = np.sqrt(initial_ar/ar) if ar > initial_ar else 1.0
-                                scale_h = np.sqrt(ar/initial_ar) if ar < initial_ar else 1.0
-                                for i in range(4):
-                                    vec = corners[i] - center
-                                    if i % 2 == 0:
-                                        vec[0] *= scale_w
-                                        vec[1] *= scale_h
-                                    else:
-                                        vec[0] *= scale_w
-                                        vec[1] *= scale_h
-                                    corners[i] = center + vec
-                            # Limit per-corner movement (max 10px per frame)
-                            if last_corners is not None:
-                                max_move = 10.0
-                                delta = corners - last_corners
-                                # If a corner moves too far, interpolate from other corners
-                                for i in range(4):
-                                    if np.linalg.norm(delta[i]) > 20.0:
-                                        # Interpolate from other three corners
-                                        others = [corners[j] for j in range(4) if j != i]
-                                        corners[i] = np.mean(others, axis=0)
-                                    else:
-                                        # Otherwise, clamp movement
-                                        delta[i] = np.clip(delta[i], -max_move, max_move)
-                                        corners[i] = last_corners[i] + delta[i]
-                            # Update velocity for prediction
-                            if last_corners is not None:
-                                new_velocity = corners - last_corners
-                                velocity = alpha_velocity * new_velocity + (1 - alpha_velocity) * velocity
-                            
-                            last_corners = corners
-                            last_H = H
-                            lost_frames = 0
-                            frames_since_update += 1
-                            
-                            # Update reference template if tracking is very stable
-                            if inliers > len(good_matches) * 0.7 and frames_since_update > update_interval:
-                                # Extract current view of tracked object
-                                src_rect = np.array([[0, 0], [w-1, 0], [w-1, h-1], [0, h-1]], dtype=np.float32)
-                                M = cv2.getPerspectiveTransform(corners.astype(np.float32), src_rect)
-                                warped = cv2.warpPerspective(gray, M, (w, h))
-                                
-                                # Recompute features on warped image
-                                kp_new, des_new = detector.detectAndCompute(warped, None)
-                                if des_new is not None and len(kp_new) >= len(kp_ref) * 0.5:
-                                    # Blend old and new descriptors
-                                    kp_ref = kp_new
-                                    des_ref = des_new
-                                    frames_since_update = 0
-                                    status = f"Tracking ({inliers}/{len(good_matches)} inliers) [UPDATED]"
+                        # Temporal smoothing with history
+                        corner_history.append(corners.copy())
+                        if len(corner_history) > 5:
+                            corner_history.pop(0)
+                        # Weighted moving average for stability
+                        if len(corner_history) >= 3:
+                            recent = corner_history[-3:]
+                            weights = np.array([0.2, 0.3, 0.5])
+                            stacked = np.stack(recent, axis=0)
+                            corners = np.average(stacked, axis=0, weights=weights)
+                        # Geometric regularization: keep shape close to initial
+                        sides, angles = get_sides_and_angles(corners)
+                        init_sides, init_angles = initial_shape
+                        # Clamp side lengths and angles to within 20% of initial
+                        sides = np.clip(sides, 0.8*init_sides, 1.2*init_sides)
+                        angles = np.clip(angles, 0.8*init_angles, 1.2*init_angles)
+                        # Area and aspect ratio constraints
+                        def quad_area(pts):
+                            return 0.5 * abs(
+                                pts[0,0]*pts[1,1] + pts[1,0]*pts[2,1] + pts[2,0]*pts[3,1] + pts[3,0]*pts[0,1]
+                                - pts[1,0]*pts[0,1] - pts[2,0]*pts[1,1] - pts[3,0]*pts[2,1] - pts[0,0]*pts[3,1]
+                            )
+                        initial_area = quad_area(ref_corners)
+                        area = quad_area(corners)
+                        min_area = 0.7 * initial_area
+                        max_area = 1.3 * initial_area
+                        if area < min_area or area > max_area:
+                            scale = np.sqrt(initial_area / (area + 1e-6))
+                            center = np.mean(corners, axis=0)
+                            corners = (corners - center) * scale + center
+                        # Aspect ratio constraint
+                        def aspect_ratio(pts):
+                            w = (np.linalg.norm(pts[0]-pts[1]) + np.linalg.norm(pts[2]-pts[3])) / 2
+                            h = (np.linalg.norm(pts[1]-pts[2]) + np.linalg.norm(pts[3]-pts[0])) / 2
+                            return w / (h + 1e-6)
+                        initial_ar = aspect_ratio(ref_corners)
+                        ar = aspect_ratio(corners)
+                        if ar < 0.7*initial_ar or ar > 1.3*initial_ar:
+                            # Adjust width/height to restore aspect ratio
+                            center = np.mean(corners, axis=0)
+                            scale_w = np.sqrt(initial_ar/ar) if ar > initial_ar else 1.0
+                            scale_h = np.sqrt(ar/initial_ar) if ar < initial_ar else 1.0
+                            for i in range(4):
+                                vec = corners[i] - center
+                                if i % 2 == 0:
+                                    vec[0] *= scale_w
+                                    vec[1] *= scale_h
                                 else:
-                                    status = f"Tracking ({inliers}/{len(good_matches)} inliers)"
+                                    vec[0] *= scale_w
+                                    vec[1] *= scale_h
+                                corners[i] = center + vec
+                        # Limit per-corner movement (max 10px per frame)
+                        if last_corners is not None:
+                            max_move = 10.0
+                            delta = corners - last_corners
+                            # If a corner moves too far, interpolate from other corners
+                            for i in range(4):
+                                if np.linalg.norm(delta[i]) > 20.0:
+                                    # Interpolate from other three corners
+                                    others = [corners[j] for j in range(4) if j != i]
+                                    corners[i] = np.mean(others, axis=0)
+                                else:
+                                    # Otherwise, clamp movement
+                                    delta[i] = np.clip(delta[i], -max_move, max_move)
+                                    corners[i] = last_corners[i] + delta[i]
+                        # Update velocity for prediction
+                        if last_corners is not None:
+                            new_velocity = corners - last_corners
+                            velocity = alpha_velocity * new_velocity + (1 - alpha_velocity) * velocity
+                        
+                        last_corners = corners
+                        last_H = H
+                        lost_frames = 0
+                        frames_since_update += 1
+                        
+                        # Update reference template if tracking is very stable
+                        if inliers > len(good_matches) * 0.7 and frames_since_update > update_interval:
+                            # Extract current view of tracked object
+                            src_rect = np.array([[0, 0], [w-1, 0], [w-1, h-1], [0, h-1]], dtype=np.float32)
+                            M = cv2.getPerspectiveTransform(corners.astype(np.float32), src_rect)
+                            warped = cv2.warpPerspective(gray, M, (w, h))
+                            
+                            # Recompute features on warped image
+                            kp_new, des_new = detector.detectAndCompute(warped, None)
+                            if des_new is not None and len(kp_new) >= len(kp_ref) * 0.5:
+                                # Blend old and new descriptors
+                                kp_ref = kp_new
+                                des_ref = des_new
+                                frames_since_update = 0
+                                status = f"Tracking ({inliers}/{len(good_matches)} inliers) [UPDATED]"
                             else:
                                 status = f"Tracking ({inliers}/{len(good_matches)} inliers)"
-                            
-                            # Store points for optical flow backup
-                            flow_points = corners.astype(np.float32).reshape(-1, 1, 2)
+                        else:
+                            status = f"Tracking ({inliers}/{len(good_matches)} inliers)"
                         
+                        # Store points for optical flow backup
+                        flow_points = corners.astype(np.float32).reshape(-1, 1, 2)
+        
         # If no good detection, try optical flow backup or prediction
         if corners is None and prev_gray is not None and flow_points is not None and last_corners is not None:
             # Try optical flow as backup
@@ -412,7 +407,7 @@ def track_object_in_video(video_path, output_path=None):
                     status = f"Optical Flow Backup"
             except:
                 pass
-            
+        
         # If still no detection, use velocity-based prediction or mark as lost
         if corners is None:
             lost_frames += 1
@@ -433,15 +428,11 @@ def track_object_in_video(video_path, output_path=None):
         # Visualize
         vis_frame = frame.copy()
         vis_frame = draw_tracked_object(vis_frame, corners, status)
-        # Overlay corner coordinates
+        # Log corners to CSV
         if corners is not None:
-            for idx, pt in enumerate(corners):
-                cv2.circle(vis_frame, tuple(np.round(pt).astype(int)), 6, (0, 0, 255), -1)
-                cv2.putText(vis_frame, f'{idx}', tuple(np.round(pt).astype(int) + np.array([8, -8])), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-            # Log to CSV
-            csv_writer.writerow([frame_count] + [f'{c[0]:.2f}' for c in corners] + [f'{c[1]:.2f}' for c in corners])
+            csv_writer.writerow([frame_count] + corners.flatten().tolist())
         else:
-            csv_writer.writerow([frame_count] + ['']*8)
+            csv_writer.writerow([frame_count] + [None]*8)
         
         # Show frame counter
         cv2.putText(vis_frame, f"Frame: {frame_count}", (width - 200, 30),
@@ -473,7 +464,8 @@ def track_object_in_video(video_path, output_path=None):
     print(f"\nProcessing complete: {frame_count} frames")
     if output_path:
         print(f"Output saved to: {output_path}")
-    log_file.close()
+    csv_file.close()
+    print('Corner coordinates logged to corners_log.csv')
 
 
 # Example usage
