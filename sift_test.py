@@ -232,6 +232,13 @@ def track_object_in_video(video_path, output_path=None):
     bundle_interval = 30  # Re-estimate homography every N frames
     canonical_H = None  # Refined homography from bundle adjustment
     
+    # Dead zone for drift prevention
+    movement_history = []  # Track recent movement magnitudes
+    is_stationary = False
+    stationary_threshold = 1.5  # pixels - below this is considered noise
+    stationary_frames_needed = 5  # frames of low movement to be considered stationary
+    anchor_position = None  # Locked position when stationary
+    
     # Reset video to start (only for file-based video)
     if not use_realsense:
         cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
@@ -348,16 +355,6 @@ def track_object_in_video(video_path, output_path=None):
                         orig_w = np.linalg.norm(ref_corners[0] - ref_corners[1])
                         orig_h = np.linalg.norm(ref_corners[1] - ref_corners[2])
                         center, angle = get_center_and_angle(corners)
-                        
-                        # Dead zone: if movement is tiny, assume it's noise and freeze position
-                        dead_zone_threshold = 0.8  # pixels
-                        if last_corners is not None:
-                            last_center = np.mean(last_corners, axis=0)
-                            movement = np.linalg.norm(center - last_center)
-                            if movement < dead_zone_threshold:
-                                # Lock to previous center, but allow rotation
-                                center = last_center
-                        
                         R = np.array([
                             [np.cos(angle), -np.sin(angle)],
                             [np.sin(angle),  np.cos(angle)]
@@ -371,6 +368,32 @@ def track_object_in_video(video_path, output_path=None):
                             [-half_w,  half_h]
                         ])
                         corners = (box @ R.T) + center
+
+                        # Dead zone: detect stationary state and prevent drift
+                        if last_corners is not None:
+                            movement_mag = np.linalg.norm(center - np.mean(last_corners, axis=0))
+                            movement_history.append(movement_mag)
+                            if len(movement_history) > 10:
+                                movement_history.pop(0)
+                            
+                            # Check if stationary (consistently low movement)
+                            if len(movement_history) >= stationary_frames_needed:
+                                avg_movement = np.mean(movement_history[-stationary_frames_needed:])
+                                
+                                if avg_movement < stationary_threshold:
+                                    # Object is stationary - freeze position
+                                    if not is_stationary:
+                                        # Just became stationary - set anchor
+                                        anchor_position = center.copy()
+                                        is_stationary = True
+                                    # Use anchored position
+                                    center = anchor_position
+                                    corners = (box @ R.T) + center
+                                    status = f"Tracking ({inliers}/{len(good_matches)} inliers) [LOCKED]"
+                                else:
+                                    # Object is moving - allow tracking
+                                    is_stationary = False
+                                    anchor_position = None
 
                         # Update velocity for prediction
                         if last_corners is not None:
