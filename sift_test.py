@@ -245,6 +245,10 @@ def track_object_in_video(video_path, output_path=None):
     angle_threshold = 0.5  # degrees - below this is considered noise
     anchor_angle = None  # Locked angle when rotationally stationary
     
+    # Speed limit to prevent tracking errors
+    max_speed = 20.0  # pixels per frame - anything above is likely a tracking error
+    max_rotation_speed = 10.0  # degrees per frame
+    
     # Reset video to start (only for file-based video)
     if not use_realsense:
         cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
@@ -374,6 +378,40 @@ def track_object_in_video(video_path, output_path=None):
                             [-half_w,  half_h]
                         ])
                         corners = (box @ R.T) + center
+
+                        # Speed limit: prevent sudden jumps from tracking errors
+                        if last_corners is not None:
+                            last_center = np.mean(last_corners, axis=0)
+                            movement_mag = np.linalg.norm(center - last_center)
+                            
+                            # Check position speed
+                            if movement_mag > max_speed:
+                                # Clamp to max speed in the same direction
+                                direction = (center - last_center) / (movement_mag + 1e-6)
+                                center = last_center + direction * max_speed
+                                status = f"Tracking ({inliers}/{len(good_matches)} inliers) [SPEED LIMIT]"
+                            
+                            # Check rotation speed
+                            last_angle = np.arctan2(
+                                last_corners[1][1] - last_corners[0][1],
+                                last_corners[1][0] - last_corners[0][0]
+                            )
+                            angle_change = abs(np.degrees(angle - last_angle))
+                            if angle_change > 180:
+                                angle_change = 360 - angle_change
+                            
+                            if angle_change > max_rotation_speed:
+                                # Keep previous angle
+                                angle = last_angle
+                                if "SPEED LIMIT" not in status:
+                                    status = f"Tracking ({inliers}/{len(good_matches)} inliers) [ROT LIMIT]"
+                            
+                            # Reconstruct with potentially limited center and angle
+                            R = np.array([
+                                [np.cos(angle), -np.sin(angle)],
+                                [np.sin(angle),  np.cos(angle)]
+                            ])
+                            corners = (box @ R.T) + center
 
                         # Dead zone: detect stationary state and prevent drift
                         if last_corners is not None:
