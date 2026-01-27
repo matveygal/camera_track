@@ -254,6 +254,11 @@ def track_object_in_video(video_path, output_path=None):
     lock_threshold = 5  # Frames needed to lock
     unlock_threshold = 3  # Frames needed to unlock
     
+    # Exponential moving average for smoothing
+    smoothed_position = None
+    smoothed_angle = None
+    alpha_smooth = 0.3  # Smoothing factor (lower = more smoothing)
+    
     # Reset video to start (only for file-based video)
     if not use_realsense:
         cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
@@ -430,12 +435,12 @@ def track_object_in_video(video_path, output_path=None):
                             innovation_angle = 2*np.pi - innovation_angle
                         
                         # Dead zone: skip Kalman update for sub-pixel noise
-                        dead_zone_pos = 0.5  # pixels
-                        dead_zone_angle = 0.008  # radians (~0.46 degrees)
+                        dead_zone_pos = 1.0  # pixels (increased from 0.5)
+                        dead_zone_angle = 0.015  # radians (increased from 0.008)
                         
-                        # Tighter threshold for locking (to avoid false locks)
-                        lock_pos = 0.3  # pixels
-                        lock_angle = 0.005  # radians
+                        # Tighter threshold for locking
+                        lock_pos = 0.6  # pixels (increased from 0.3)
+                        lock_angle = 0.01  # radians (increased from 0.005)
                         
                         # Different thresholds depending on current state (hysteresis)
                         if is_locked:
@@ -562,6 +567,23 @@ def track_object_in_video(video_path, output_path=None):
                                 # Use Kalman filtered values
                                 center = kf_state[:2]
                                 angle = kf_state[4]
+                                
+                                # Apply exponential moving average smoothing to reduce jitter
+                                if smoothed_position is None:
+                                    smoothed_position = center.copy()
+                                    smoothed_angle = angle
+                                else:
+                                    smoothed_position = alpha_smooth * center + (1 - alpha_smooth) * smoothed_position
+                                    # Handle angle wrapping for smoothing
+                                    angle_diff = angle - smoothed_angle
+                                    if angle_diff > np.pi:
+                                        angle_diff -= 2*np.pi
+                                    elif angle_diff < -np.pi:
+                                        angle_diff += 2*np.pi
+                                    smoothed_angle = smoothed_angle + alpha_smooth * angle_diff
+                                
+                                center = smoothed_position
+                                angle = smoothed_angle
                                 
                                 # Normal status
                                 if inliers < 12:
