@@ -32,77 +32,6 @@ def get_realsense_frame(pipeline):
     return np.asanyarray(color_frame.get_data())
 
 
-def select_rotated_roi(frame):
-    """Custom ROI selector with rotation support (45-degree steps)"""
-    print("Select ROI with mouse, then rotate with 'r'/'R' keys")
-    print("Press ENTER/SPACE to confirm, 'q' to cancel")
-    
-    # First, get axis-aligned ROI
-    roi = cv2.selectROI("Select Object (then rotate if needed)", frame, fromCenter=False, showCrosshair=True)
-    cv2.destroyWindow("Select Object (then rotate if needed)")
-    
-    x, y, w, h = [int(v) for v in roi]
-    if w == 0 or h == 0:
-        return None, None, None
-    
-    # Allow user to rotate the ROI
-    rotation_angle = 0  # degrees
-    confirmed = False
-    
-    while not confirmed:
-        # Create display frame
-        display = frame.copy()
-        
-        # Calculate rotated corners
-        center = np.array([x + w/2, y + h/2])
-        angle_rad = np.radians(rotation_angle)
-        cos_a, sin_a = np.cos(angle_rad), np.sin(angle_rad)
-        
-        # Corners of axis-aligned box relative to center
-        half_w, half_h = w/2, h/2
-        corners_local = np.array([
-            [-half_w, -half_h],
-            [ half_w, -half_h],
-            [ half_w,  half_h],
-            [-half_w,  half_h]
-        ])
-        
-        # Rotate and translate
-        R = np.array([[cos_a, -sin_a], [sin_a, cos_a]])
-        corners = (corners_local @ R.T) + center
-        
-        # Draw rotated box
-        pts = corners.astype(np.int32).reshape((-1, 1, 2))
-        cv2.polylines(display, [pts], True, (0, 255, 0), 2)
-        cv2.circle(display, tuple(center.astype(int)), 5, (0, 255, 0), -1)
-        
-        # Show instructions
-        cv2.putText(display, f"Rotation: {rotation_angle} deg", (10, 30),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-        cv2.putText(display, "Press 'r' to rotate +45deg, 'R' for -45deg", (10, 60),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
-        cv2.putText(display, "Press ENTER/SPACE to confirm", (10, 85),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
-        
-        cv2.imshow("Rotate ROI", display)
-        
-        key = cv2.waitKey(0) & 0xFF
-        if key == ord('r'):
-            rotation_angle = (rotation_angle + 45) % 360
-        elif key == ord('R'):
-            rotation_angle = (rotation_angle - 45) % 360
-        elif key == ord(' ') or key == 13:  # Space or Enter
-            confirmed = True
-        elif key == ord('q'):
-            cv2.destroyWindow("Rotate ROI")
-            return None, None, None
-    
-    cv2.destroyWindow("Rotate ROI")
-    
-    # Return the rotated corners and the center/dimensions
-    return corners, (x, y, w, h), rotation_angle
-
-
 def draw_tracked_object(frame, corners, status="Tracking"):
     """Draw the detected object polygon and info"""
     if corners is not None and len(corners) == 4:
@@ -201,64 +130,112 @@ def track_object_in_video(video_path, output_path=None):
     
     cv2.destroyWindow("Live Preview - Position Object")
     
-    # Multi-view capture: let user capture object at multiple rotations
-    print("\n=== MULTI-VIEW CAPTURE ===")
-    print("You can capture the object at multiple rotations for better tracking")
-    print("Rotate the object (or camera) between captures")
-    print("Recommended: 0°, 45°, 90°, 135° rotations\n")
+    # Multi-view capture: capture object at multiple rotations
+    print("\n=== MULTI-VIEW CAPTURE MODE ===")
+    print("You will capture the object at different rotations:")
+    print("Suggested angles: 0°, 45°, 90°, 135°, 180°")
+    print("This will improve tracking quality significantly!\n")
     
-    # Store multiple reference views
-    ref_views = []  # List of (ref_gray, kp, des, w, h)
+    rotation_angles = [0, 45, 90, 135, 180]
+    captured_views = []
+    all_keypoints = []
+    all_descriptors = []
     
-    capture_count = 0
-    while True:
-        # Let user select rotated ROI for this view
-        print(f"\nCapture #{capture_count + 1}:")
-        print("Select the object (you can rotate the selection box)")
-        roi_corners, roi_data, roi_rotation = select_rotated_roi(first_frame)
+    # Initialize feature detector first
+    try:
+        detector = cv2.SIFT_create(nfeatures=3000, contrastThreshold=0.03)
+        print("Using SIFT detector (best for rotation/scale)")
+    except:
+        detector = cv2.ORB_create(nfeatures=3000, 
+                                   scaleFactor=1.2, 
+                                   nlevels=10, 
+                                   edgeThreshold=10,
+                                   patchSize=31)
+        print("Using ORB detector")
+    
+    for angle_idx, angle in enumerate(rotation_angles):
+        print(f"\n--- View {angle_idx + 1}/{len(rotation_angles)}: Rotate object to ~{angle}° ---")
+        print("Position the object, then press SPACE to capture")
+        print("Press 's' to skip this angle, 'q' to finish with current views")
         
-        if roi_corners is None:
-            if capture_count == 0:
-                print("Error: No ROI selected")
-                if use_realsense:
-                    pipeline.stop()
-                else:
-                    cap.release()
-                return
+        # Show live preview for positioning
+        view_frame = None
+        while True:
+            if use_realsense:
+                frame = get_realsense_frame(pipeline)
+                if frame is None:
+                    break
             else:
-                print(f"Capture cancelled. Using {capture_count} view(s).")
+                ret, frame = cap.read()
+                if not ret:
+                    break
+            
+            preview = frame.copy()
+            cv2.putText(preview, f"Rotation: ~{angle} degrees ({angle_idx+1}/{len(rotation_angles)})", 
+                        (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+            cv2.putText(preview, "SPACE=Capture | s=Skip | q=Finish", (10, 60),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+            cv2.imshow("Multi-View Capture", preview)
+            
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord(' '):
+                view_frame = frame.copy()
+                print(f"View at {angle}° captured!")
+                break
+            elif key == ord('s'):
+                print(f"Skipped {angle}° view")
+                view_frame = None
+                break
+            elif key == ord('q'):
+                print("Finishing with current views...")
+                view_frame = None
                 break
         
-        x, y, w, h = roi_data
-        
-        # Extract rotated reference image using perspective transform
-        src_pts = roi_corners.astype(np.float32)
-        dst_pts = np.float32([[0, 0], [w, 0], [w, h], [0, h]])
-        M = cv2.getPerspectiveTransform(src_pts, dst_pts)
-        ref_img = cv2.warpPerspective(first_frame, M, (w, h))
-        ref_gray = cv2.cvtColor(ref_img, cv2.COLOR_BGR2GRAY)
-        
-        # Show the captured reference
-        display = ref_img.copy()
-        cv2.putText(display, f"Capture #{capture_count + 1}", (10, 30),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-        cv2.imshow("Captured Reference", display)
-        cv2.waitKey(500)
-        
-        ref_views.append((ref_gray, w, h, roi_rotation))
-        capture_count += 1
-        
-        # Ask if user wants to capture more views
-        print(f"Captured view #{capture_count} at {roi_rotation}° rotation")
-        response = input("Capture another view? (y/N): ").strip().lower()
-        if response != 'y':
+        if view_frame is None and key == ord('q'):
             break
+        
+        if view_frame is not None:
+            # Let user select ROI for this view
+            print(f"Select the object ROI for {angle}° view")
+            roi = cv2.selectROI("Select Object", view_frame, fromCenter=False, showCrosshair=True)
+            cv2.destroyWindow("Select Object")
+            
+            x, y, w, h = [int(v) for v in roi]
+            if w > 0 and h > 0:
+                # Extract and process this view
+                ref_img = view_frame[y:y+h, x:x+w]
+                ref_gray = cv2.cvtColor(ref_img, cv2.COLOR_BGR2GRAY)
+                
+                # Compute features for this view
+                kp, des = detector.detectAndCompute(ref_gray, None)
+                
+                if des is not None and len(kp) > 0:
+                    captured_views.append({
+                        'angle': angle,
+                        'roi': (x, y, w, h),
+                        'image': ref_img,
+                        'keypoints': kp,
+                        'descriptors': des
+                    })
+                    all_keypoints.extend(kp)
+                    all_descriptors.append(des)
+                    print(f"✓ {angle}° view: {len(kp)} features extracted")
+                else:
+                    print(f"✗ {angle}° view: No features found")
+            else:
+                print(f"✗ {angle}° view: No ROI selected")
     
-    cv2.destroyAllWindows()
-    print(f"\nTotal views captured: {capture_count}")
+    cv2.destroyWindow("Multi-View Capture")
     
-    # Use dimensions from first view as canonical size
-    ref_gray, w, h, _ = ref_views[0]
+    if len(captured_views) == 0:
+        print("Error: No views captured")
+        return
+    
+    print(f"\n=== Captured {len(captured_views)} views ===")
+    
+    # Use first view for reference dimensions
+    first_view = captured_views[0]
+    x, y, w, h = first_view['roi']
     
     # Store reference corners in reference image coordinate system
     ref_corners = np.float32([
@@ -267,6 +244,7 @@ def track_object_in_video(video_path, output_path=None):
         [w, h],
         [0, h]
     ]).reshape(-1, 2)
+    
     # Save initial shape for regularization
     def get_sides_and_angles(corners):
         sides = [np.linalg.norm(corners[i] - corners[(i+1)%4]) for i in range(4)]
@@ -280,37 +258,20 @@ def track_object_in_video(video_path, output_path=None):
     initial_sides, initial_angles = get_sides_and_angles(ref_corners)
     initial_shape = (initial_sides, initial_angles)
     
-    # Initialize feature detector - using SIFT for better rotation/scale invariance
-    # Fallback to ORB if SIFT not available
-    try:
-        detector = cv2.SIFT_create(nfeatures=3000, contrastThreshold=0.03)
-        print("Using SIFT detector (best for rotation/scale)")
-    except:
-        detector = cv2.ORB_create(nfeatures=3000, 
-                                   scaleFactor=1.2, 
-                                   nlevels=10, 
-                                   edgeThreshold=10,
-                                   patchSize=31)
-        print("Using ORB detector")
-    
-    # Compute features for all reference views
-    ref_features = []  # List of (kp, des) tuples
-    total_features = 0
-    
-    for i, (ref_gray_view, w_view, h_view, rotation) in enumerate(ref_views):
-        kp, des = detector.detectAndCompute(ref_gray_view, None)
-        if des is not None and len(kp) >= 4:
-            ref_features.append((kp, des))
-            total_features += len(kp)
-            print(f"View #{i+1} ({rotation}°): {len(kp)} features")
-        else:
-            print(f"Warning: View #{i+1} has insufficient features, skipping")
-    
-    if len(ref_features) == 0:
-        print("Error: No views have sufficient features. Choose more textured objects.")
+    # Combine all descriptors from all views
+    if len(all_descriptors) > 0:
+        des_ref = np.vstack(all_descriptors)
+        kp_ref = all_keypoints
+        print(f"Total reference features: {len(kp_ref)}")
+    else:
+        print("Error: No descriptors extracted from any view")
         return
     
-    print(f"\nTotal reference features across all views: {total_features}")
+    if des_ref is None or len(kp_ref) < 4:
+        print("Error: Not enough features in reference image. Choose a more textured object.")
+        return
+    
+    print(f"Reference features: {len(kp_ref)}")
     
     # BFMatcher - use L2 for SIFT, Hamming for ORB
     try:
@@ -405,81 +366,63 @@ def track_object_in_video(video_path, output_path=None):
         ratio_threshold = 0.85 if lost_frames > 3 else 0.8
         
         if des is not None and len(kp) >= 4:
-            # Match against all reference views and find best match
-            best_matches = []
-            best_inliers = 0
-            best_H = None
-            best_view_idx = 0
+            # Match descriptors
+            matches = matcher.knnMatch(des_ref, des, k=2)
             
-            for view_idx, (kp_ref, des_ref) in enumerate(ref_features):
-                # Match descriptors
-                matches = matcher.knnMatch(des_ref, des, k=2)
-                
-                # Apply Lowe's ratio test (adaptive threshold)
-                good_matches = []
-                for match_pair in matches:
-                    if len(match_pair) == 2:
-                        m, n = match_pair
-                        if m.distance < ratio_threshold * n.distance:
-                            good_matches.append(m)
-                
-                # Need at least 6 matches for more robust homography
-                if len(good_matches) >= 6:
-                    # Extract matched point coordinates
-                    src_pts = np.float32([kp_ref[m.queryIdx].pt for m in good_matches]).reshape(-1, 1, 2)
-                    dst_pts = np.float32([kp[m.trainIdx].pt for m in good_matches]).reshape(-1, 1, 2)
-                    
-                    # Find homography with more lenient RANSAC
-                    H, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 
-                                                 ransacReprojThreshold=8.0,
-                                                 maxIters=2000,
-                                                 confidence=0.995)
-                    
-                    if H is not None:
-                        inliers = np.sum(mask)
-                        if inliers > best_inliers:
-                            best_inliers = inliers
-                            best_H = H
-                            best_matches = good_matches
-                            best_view_idx = view_idx
+            # Apply Lowe's ratio test (adaptive threshold)
+            good_matches = []
+            for match_pair in matches:
+                if len(match_pair) == 2:
+                    m, n = match_pair
+                    if m.distance < ratio_threshold * n.distance:
+                        good_matches.append(m)
             
-            # Use best match across all views
-            if best_H is not None and best_inliers >= max(6, int(len(best_matches) * 0.3)):
+            # Need at least 6 matches for more robust homography
+            if len(good_matches) >= 6:
+                # Extract matched point coordinates
+                src_pts = np.float32([kp_ref[m.queryIdx].pt for m in good_matches]).reshape(-1, 1, 2)
+                dst_pts = np.float32([kp[m.trainIdx].pt for m in good_matches]).reshape(-1, 1, 2)
                 
-                # Store inlier matches for bundle adjustment
-                        inlier_indices = np.ones(len(best_matches), dtype=bool)  # All are inliers from best match
-                        inlier_src = np.float32([ref_features[best_view_idx][0][m.queryIdx].pt for m in best_matches]).reshape(-1, 1, 2)
-                        inlier_dst = np.float32([kp[m.trainIdx].pt for m in best_matches]).reshape(-1, 1, 2)
-                        match_buffer.append((inlier_src, inlier_dst))
-                        if len(match_buffer) > bundle_interval:
-                            match_buffer.pop(0)
+                # Find homography with more lenient RANSAC
+                H, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 
+                                             ransacReprojThreshold=8.0,  # More lenient
+                                             maxIters=2000,  # More iterations
+                                             confidence=0.995)
+                
+                if H is not None:
+                    # Count inliers
+                    inliers = np.sum(mask)
+                    
+                    # Store inlier matches for bundle adjustment
+                    inlier_indices = mask.ravel() == 1
+                    inlier_src = src_pts[inlier_indices]
+                    inlier_dst = dst_pts[inlier_indices]
+                    match_buffer.append((inlier_src, inlier_dst))
+                    if len(match_buffer) > bundle_interval:
+                        match_buffer.pop(0)
+                    
+                    # Bundle adjustment: every N frames, pool matches and re-estimate
+                    if frame_count % bundle_interval == 0 and len(match_buffer) >= 10:
+                        # Pool all inlier matches from buffer
+                        all_src = np.vstack([src for src, dst in match_buffer])
+                        all_dst = np.vstack([dst for src, dst in match_buffer])
                         
-                        # Bundle adjustment: every N frames, pool matches and re-estimate
-                        if frame_count % bundle_interval == 0 and len(match_buffer) >= 10:
-                            # Pool all inlier matches from buffer
-                            all_src = np.vstack([src for src, dst in match_buffer])
-                            all_dst = np.vstack([dst for src, dst in match_buffer])
-                            
-                            # Compute refined homography from pooled matches
-                            H_refined, mask_refined = cv2.findHomography(
-                                all_src, all_dst, cv2.RANSAC,
-                                ransacReprojThreshold=5.0,  # Stricter for pooled data
-                                maxIters=3000,
-                                confidence=0.999
-                            )
-                            
-                            if H_refined is not None:
-                                canonical_H = H_refined
-                                status = f"Tracking ({best_inliers}/{len(best_matches)} inliers, view {best_view_idx+1}) [BUNDLE]"
+                        # Compute refined homography from pooled matches
+                        H_refined, mask_refined = cv2.findHomography(
+                            all_src, all_dst, cv2.RANSAC,
+                            ransacReprojThreshold=5.0,  # Stricter for pooled data
+                            maxIters=3000,
+                            confidence=0.999
+                        )
                         
-                        # Use current H for tracking (don't lag behind with canonical)
-                        H = best_H
-                        inliers = best_inliers
-                        good_matches = best_matches
+                        if H_refined is not None:
+                            canonical_H = H_refined
+                            status = f"Tracking ({inliers}/{len(good_matches)} inliers) [BUNDLE]"
+                    
+                    # Use current H for tracking (don't lag behind with canonical)
                     
                     # Require sufficient inliers (at least 30% of matches)
                     min_inliers = max(6, int(len(good_matches) * 0.3))
-            
                     if inliers >= min_inliers:
                         # Transform reference corners to current frame
                         corners = cv2.perspectiveTransform(ref_corners.reshape(-1, 1, 2), H)
@@ -645,9 +588,9 @@ def track_object_in_video(video_path, output_path=None):
                                 kp_ref = kp_new
                                 des_ref = des_new
                                 frames_since_update = 0
-                                status = f"Tracking ({inliers}/{len(good_matches)} inliers, view {best_view_idx+1}) [UPDATED]"
+                                status = f"Tracking ({inliers}/{len(good_matches)} inliers) [UPDATED]"
                             else:
-                                status = f"Tracking ({inliers}/{len(good_matches)} inliers, view {best_view_idx+1})"
+                                status = f"Tracking ({inliers}/{len(good_matches)} inliers)"
                         else:
                             status = f"Tracking ({inliers}/{len(good_matches)} inliers)"
                         
