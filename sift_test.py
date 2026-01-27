@@ -245,12 +245,6 @@ def track_object_in_video(video_path, output_path=None):
     process_noise_omega = 0.05  # Process noise for angular velocity
     measurement_noise_base = 5.0  # Base measurement noise (modulated by inlier count)
     
-    # Stationary detection for drift prevention
-    velocity_history = []  # Track recent velocity magnitudes
-    stationary_velocity_threshold = 0.5  # pixels per frame
-    stationary_angular_velocity_threshold = 0.02  # radians per frame
-    stationary_frames_needed = 10  # frames of low velocity to consider stationary
-    
     # Reset video to start (only for file-based video)
     if not use_realsense:
         cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
@@ -473,35 +467,35 @@ def track_object_in_video(video_path, output_path=None):
                             # Update covariance
                             kf_P = (np.eye(6) - K @ H) @ kf_P_pred
                             
-                            # Stationary detection: zero velocity if consistently low
-                            velocity_mag = np.linalg.norm(kf_state[2:4])  # Linear velocity
-                            angular_velocity_mag = abs(kf_state[5])  # Angular velocity
-                            velocity_history.append(velocity_mag)
-                            if len(velocity_history) > 15:
-                                velocity_history.pop(0)
-                            
-                            if len(velocity_history) >= stationary_frames_needed:
-                                avg_velocity = np.mean(velocity_history[-stationary_frames_needed:])
-                                
-                                if (avg_velocity < stationary_velocity_threshold and 
-                                    angular_velocity_mag < stationary_angular_velocity_threshold):
-                                    # Object is stationary - zero out velocity to prevent drift
-                                    kf_state[2:4] = 0.0  # Zero linear velocity
-                                    kf_state[5] = 0.0    # Zero angular velocity
-                                    # Reduce velocity uncertainty
-                                    kf_P[2,2] = 0.1
-                                    kf_P[3,3] = 0.1
-                                    kf_P[5,5] = 0.01
-                            
                             # Use Kalman filtered values
                             center = kf_state[:2]
                             angle = kf_state[4]
                             
+                            # Stationary detection: zero velocities when motion is negligible
+                            # This prevents velocity bias accumulation and drift
+                            velocity_mag = np.linalg.norm(kf_state[2:4])
+                            angular_velocity = abs(kf_state[5])
+                            
+                            # Check if measured innovation is small (object likely stationary)
+                            position_innovation = np.linalg.norm(y[:2])
+                            angle_innovation = abs(y[2])
+                            
+                            # If both velocity and innovation are tiny, force zero velocity
+                            if velocity_mag < 0.5 and position_innovation < 1.0:
+                                kf_state[2:4] = 0.0  # Zero linear velocity
+                                status = f"Tracking ({inliers}/{len(good_matches)} inliers) [LOCKED]"
+                            
+                            if angular_velocity < 0.01 and angle_innovation < 0.02:
+                                kf_state[5] = 0.0  # Zero angular velocity
+                                if "[LOCKED]" in status:
+                                    status = f"Tracking ({inliers}/{len(good_matches)} inliers) [LOCKED+ROT]"
+                            
                             # Add inlier info to status
-                            if inliers < 12:
-                                status = f"Tracking ({inliers}/{len(good_matches)} inliers) [LOW VIS]"
-                            else:
-                                status = f"Tracking ({inliers}/{len(good_matches)} inliers) [KF]"
+                            if "[LOCKED" not in status:
+                                if inliers < 12:
+                                    status = f"Tracking ({inliers}/{len(good_matches)} inliers) [LOW VIS]"
+                                else:
+                                    status = f"Tracking ({inliers}/{len(good_matches)} inliers) [KF]"
                         
                         # Reconstruct box with Kalman-filtered center and angle
                         R = np.array([
