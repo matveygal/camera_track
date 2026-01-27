@@ -32,6 +32,77 @@ def get_realsense_frame(pipeline):
     return np.asanyarray(color_frame.get_data())
 
 
+def select_rotated_roi(frame):
+    """Custom ROI selector with rotation support (45-degree steps)"""
+    print("Select ROI with mouse, then rotate with 'r'/'R' keys")
+    print("Press ENTER/SPACE to confirm, 'q' to cancel")
+    
+    # First, get axis-aligned ROI
+    roi = cv2.selectROI("Select Object (then rotate if needed)", frame, fromCenter=False, showCrosshair=True)
+    cv2.destroyWindow("Select Object (then rotate if needed)")
+    
+    x, y, w, h = [int(v) for v in roi]
+    if w == 0 or h == 0:
+        return None, None, None
+    
+    # Allow user to rotate the ROI
+    rotation_angle = 0  # degrees
+    confirmed = False
+    
+    while not confirmed:
+        # Create display frame
+        display = frame.copy()
+        
+        # Calculate rotated corners
+        center = np.array([x + w/2, y + h/2])
+        angle_rad = np.radians(rotation_angle)
+        cos_a, sin_a = np.cos(angle_rad), np.sin(angle_rad)
+        
+        # Corners of axis-aligned box relative to center
+        half_w, half_h = w/2, h/2
+        corners_local = np.array([
+            [-half_w, -half_h],
+            [ half_w, -half_h],
+            [ half_w,  half_h],
+            [-half_w,  half_h]
+        ])
+        
+        # Rotate and translate
+        R = np.array([[cos_a, -sin_a], [sin_a, cos_a]])
+        corners = (corners_local @ R.T) + center
+        
+        # Draw rotated box
+        pts = corners.astype(np.int32).reshape((-1, 1, 2))
+        cv2.polylines(display, [pts], True, (0, 255, 0), 2)
+        cv2.circle(display, tuple(center.astype(int)), 5, (0, 255, 0), -1)
+        
+        # Show instructions
+        cv2.putText(display, f"Rotation: {rotation_angle} deg", (10, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+        cv2.putText(display, "Press 'r' to rotate +45deg, 'R' for -45deg", (10, 60),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
+        cv2.putText(display, "Press ENTER/SPACE to confirm", (10, 85),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
+        
+        cv2.imshow("Rotate ROI", display)
+        
+        key = cv2.waitKey(0) & 0xFF
+        if key == ord('r'):
+            rotation_angle = (rotation_angle + 45) % 360
+        elif key == ord('R'):
+            rotation_angle = (rotation_angle - 45) % 360
+        elif key == ord(' ') or key == 13:  # Space or Enter
+            confirmed = True
+        elif key == ord('q'):
+            cv2.destroyWindow("Rotate ROI")
+            return None, None, None
+    
+    cv2.destroyWindow("Rotate ROI")
+    
+    # Return the rotated corners and the center/dimensions
+    return corners, (x, y, w, h), rotation_angle
+
+
 def draw_tracked_object(frame, corners, status="Tracking"):
     """Draw the detected object polygon and info"""
     if corners is not None and len(corners) == 4:
@@ -130,18 +201,26 @@ def track_object_in_video(video_path, output_path=None):
     
     cv2.destroyWindow("Live Preview - Position Object")
     
-    # Let user select ROI
-    print("Select the object to track, then press ENTER or SPACE")
-    roi = cv2.selectROI("Select Object", first_frame, fromCenter=False, showCrosshair=True)
-    cv2.destroyWindow("Select Object")
+    # Let user select rotated ROI
+    print("Select the object to track (you can rotate after selection)")
+    roi_corners, roi_data, roi_rotation = select_rotated_roi(first_frame)
     
-    x, y, w, h = [int(v) for v in roi]
-    if w == 0 or h == 0:
+    if roi_corners is None:
         print("Error: No ROI selected")
+        if use_realsense:
+            pipeline.stop()
+        else:
+            cap.release()
         return
     
-    # Extract reference image
-    ref_img = first_frame[y:y+h, x:x+w]
+    x, y, w, h = roi_data
+    
+    # Extract rotated reference image using perspective transform
+    # Map the rotated corners back to an axis-aligned rectangle
+    src_pts = roi_corners.astype(np.float32)
+    dst_pts = np.float32([[0, 0], [w, 0], [w, h], [0, h]])
+    M = cv2.getPerspectiveTransform(src_pts, dst_pts)
+    ref_img = cv2.warpPerspective(first_frame, M, (w, h))
     ref_gray = cv2.cvtColor(ref_img, cv2.COLOR_BGR2GRAY)
     
     # Store reference corners in reference image coordinate system
@@ -246,8 +325,8 @@ def track_object_in_video(video_path, output_path=None):
     anchor_angle = None  # Locked angle when rotationally stationary
     
     # Speed limit to prevent tracking errors
-    max_speed = 20.0  # pixels per frame - anything above is likely a tracking error
-    max_rotation_speed = 10.0  # degrees per frame
+    max_speed = 5.0  # pixels per frame - anything above is likely a tracking error
+    max_rotation_speed = 2.0  # degrees per frame
     
     # Reset video to start (only for file-based video)
     if not use_realsense:
