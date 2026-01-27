@@ -259,6 +259,7 @@ def track_object_in_video(video_path, output_path=None):
     stable_angle = None
     stability_frames = 0
     stability_threshold = 10  # Frames needed to update anchor to new stable position
+    allow_locking = True  # Prevent locking until anchor updates after movement
     
     # Exponential moving average for smoothing
     smoothed_position = None
@@ -462,8 +463,8 @@ def track_object_in_video(video_path, output_path=None):
                             # Innovation too small - increment counter
                             dead_zone_frames += 1
                             
-                            # Require multiple frames to lock
-                            if dead_zone_frames >= lock_threshold and not is_locked:
+                            # Require multiple frames to lock (and only if locking is allowed)
+                            if dead_zone_frames >= lock_threshold and not is_locked and allow_locking:
                                 is_locked = True
                             
                             if is_locked:
@@ -487,20 +488,19 @@ def track_object_in_video(video_path, output_path=None):
                                 angle = kf_state[4]
                                 status = f"Tracking ({inliers}/{len(good_matches)} inliers) [DEAD ZONE {dead_zone_frames}/{lock_threshold}]"
                         else:
-                            # Innovation above threshold - real movement detected
+                            # Innovation above threshold
                             if is_locked:
-                                # Unlock immediately on significant movement
+                                # Unlock immediately on movement
                                 is_locked = False
+                                allow_locking = False  # Prevent re-locking to old anchor
                                 dead_zone_frames = 0
-                                # Reset stability tracking to start fresh
-                                stable_position = None
-                                stable_angle = None
-                                stability_frames = 0
+                                status = f"Tracking ({inliers}/{len(good_matches)} inliers) [MOVEMENT DETECTED]"
                             
-                            # Real movement - reset counter and track movement
-                            dead_zone_frames = 0
-                            
-                            # Track stable position for anchor updates
+                            if not is_locked:
+                                # Real movement detected - reset counter
+                                dead_zone_frames = 0
+                                
+                                # Track stable position for anchor updates
                                 # If position is stable at new location, update anchor
                                 if smoothed_position is not None:
                                     if stable_position is None:
@@ -520,6 +520,7 @@ def track_object_in_video(video_path, output_path=None):
                                                 # Position has been stable for enough frames, update anchor
                                                 anchor_position = stable_position.copy()
                                                 anchor_angle = stable_angle
+                                                allow_locking = True  # Re-enable locking now that anchor is updated
                                                 print(f"\rAnchor updated to new stable position: ({anchor_position[0]:.1f}, {anchor_position[1]:.1f})   ", end='')
                                         else:  # Position changed, reset stability tracking
                                             stable_position = smoothed_position.copy()
