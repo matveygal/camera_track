@@ -245,6 +245,11 @@ def track_object_in_video(video_path, output_path=None):
     process_noise_omega = 0.05  # Process noise for angular velocity
     measurement_noise_base = 5.0  # Base measurement noise (modulated by inlier count)
     
+    # Position anchoring for dead zone
+    anchor_position = None
+    anchor_angle = None
+    dead_zone_frames = 0
+    
     # Reset video to start (only for file-based video)
     if not use_realsense:
         cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
@@ -419,17 +424,42 @@ def track_object_in_video(video_path, output_path=None):
                         dead_zone_angle = 0.008  # radians (~0.46 degrees)
                         
                         if innovation_pos < dead_zone_pos and innovation_angle < dead_zone_angle:
-                            # Innovation too small - likely noise, use prediction only
-                            # BUT: zero velocities to prevent drift accumulation
-                            kf_state = kf_state_pred.copy()
-                            kf_state[2:4] = 0.0  # Zero linear velocity
-                            kf_state[5] = 0.0     # Zero angular velocity
-                            kf_P = kf_P_pred
-                            center = kf_state[:2]
-                            angle = kf_state[4]
-                            status = f"Tracking ({inliers}/{len(good_matches)} inliers) [DEAD ZONE]"
+                            # Innovation too small - likely noise
+                            dead_zone_frames += 1
+                            
+                            # After 2 frames in dead zone, set and lock to anchor
+                            if dead_zone_frames >= 2:
+                                if anchor_position is None:
+                                    # First time locking - set anchor from current state
+                                    anchor_position = kf_state_pred[:2].copy()
+                                    anchor_angle = kf_state_pred[4]
+                                
+                                # Completely lock to anchor
+                                kf_state = kf_state_pred.copy()
+                                kf_state[:2] = anchor_position
+                                kf_state[2:4] = 0.0  # Zero linear velocity
+                                kf_state[4] = anchor_angle
+                                kf_state[5] = 0.0     # Zero angular velocity
+                                kf_P = kf_P_pred
+                                center = anchor_position
+                                angle = anchor_angle
+                                status = f"Tracking ({inliers}/{len(good_matches)} inliers) [LOCKED]"
+                            else:
+                                # Still confirming dead zone, use prediction with zero velocity
+                                kf_state = kf_state_pred.copy()
+                                kf_state[2:4] = 0.0
+                                kf_state[5] = 0.0
+                                kf_P = kf_P_pred
+                                center = kf_state[:2]
+                                angle = kf_state[4]
+                                status = f"Tracking ({inliers}/{len(good_matches)} inliers) [DEAD ZONE]"
                         else:
-                            # Real movement detected - proceed with Kalman update
+                            # Real movement detected - clear anchor and dead zone counter
+                            dead_zone_frames = 0
+                            anchor_position = None
+                            anchor_angle = None
+                            
+                            # Proceed with Kalman update
                             
                             # Abnormal motion suppression: check if measurement deviates too much
                             # Calculate expected deviation (3σ)
