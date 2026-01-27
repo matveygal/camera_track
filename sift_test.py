@@ -250,6 +250,9 @@ def track_object_in_video(video_path, output_path=None):
     anchor_angle = None
     dead_zone_frames = 0
     first_detection_set = False  # Track if we've set the initial anchor
+    is_locked = False  # Track lock state for hysteresis
+    lock_threshold = 5  # Frames needed to lock
+    unlock_threshold = 3  # Frames needed to unlock
     
     # Reset video to start (only for file-based video)
     if not use_realsense:
@@ -430,38 +433,76 @@ def track_object_in_video(video_path, output_path=None):
                         dead_zone_pos = 0.5  # pixels
                         dead_zone_angle = 0.008  # radians (~0.46 degrees)
                         
-                        if innovation_pos < dead_zone_pos and innovation_angle < dead_zone_angle:
-                            # Innovation too small - likely noise
+                        # Tighter threshold for locking (to avoid false locks)
+                        lock_pos = 0.3  # pixels
+                        lock_angle = 0.005  # radians
+                        
+                        # Different thresholds depending on current state (hysteresis)
+                        if is_locked:
+                            # Use looser threshold to stay locked
+                            check_pos = dead_zone_pos
+                            check_angle = dead_zone_angle
+                        else:
+                            # Use tighter threshold to lock
+                            check_pos = lock_pos
+                            check_angle = lock_angle
+                        
+                        if innovation_pos < check_pos and innovation_angle < check_angle:
+                            # Innovation too small - increment counter
                             dead_zone_frames += 1
                             
-                            # After 2 frames in dead zone, lock to initial anchor
-                            if dead_zone_frames >= 2:
-                                # Use the anchor from first detection (never update it)
-                                # This prevents bias accumulation
+                            # Require multiple frames to lock
+                            if dead_zone_frames >= lock_threshold and not is_locked:
+                                is_locked = True
+                            
+                            if is_locked:
+                                # Completely lock to anchor with zero velocity
                                 kf_state = kf_state_pred.copy()
                                 kf_state[:2] = anchor_position
-                                kf_state[2:4] = 0.0  # Zero linear velocity
+                                kf_state[2:4] = 0.0
                                 kf_state[4] = anchor_angle
-                                kf_state[5] = 0.0     # Zero angular velocity
+                                kf_state[5] = 0.0
                                 kf_P = kf_P_pred
                                 center = anchor_position
                                 angle = anchor_angle
                                 status = f"Tracking ({inliers}/{len(good_matches)} inliers) [LOCKED]"
                             else:
-                                # Still confirming dead zone, use prediction with zero velocity
+                                # Approaching lock, use prediction with zero velocity
                                 kf_state = kf_state_pred.copy()
                                 kf_state[2:4] = 0.0
                                 kf_state[5] = 0.0
                                 kf_P = kf_P_pred
                                 center = kf_state[:2]
                                 angle = kf_state[4]
-                                status = f"Tracking ({inliers}/{len(good_matches)} inliers) [DEAD ZONE]"
+                                status = f"Tracking ({inliers}/{len(good_matches)} inliers) [DEAD ZONE {dead_zone_frames}/{lock_threshold}]"
                         else:
-                            # Real movement detected - clear dead zone counter
-                            # But keep the original anchor for next time
-                            dead_zone_frames = 0
+                            # Innovation above threshold
+                            if is_locked:
+                                # Decrement counter when locked
+                                dead_zone_frames -= 1
+                                if dead_zone_frames <= 0:
+                                    # Unlock after enough movement
+                                    is_locked = False
+                                    dead_zone_frames = 0
+                                else:
+                                    # Still locked, hold position
+                                    kf_state = kf_state_pred.copy()
+                                    kf_state[:2] = anchor_position
+                                    kf_state[2:4] = 0.0
+                                    kf_state[4] = anchor_angle
+                                    kf_state[5] = 0.0
+                                    kf_P = kf_P_pred
+                                    center = anchor_position
+                                    angle = anchor_angle
+                                    status = f"Tracking ({inliers}/{len(good_matches)} inliers) [UNLOCKING {dead_zone_frames}]"
+                                    # Skip the Kalman update below
+                                    corners = (box @ np.array([[np.cos(angle), -np.sin(angle)], [np.sin(angle), np.cos(angle)]]).T) + center
                             
-                            # Proceed with Kalman update
+                            if not is_locked:
+                                # Real movement detected - reset counter
+                                dead_zone_frames = 0
+                                
+                                # Proceed with Kalman update
                             
                             # Abnormal motion suppression: check if measurement deviates too much
                             # Calculate expected deviation (3σ)
