@@ -420,18 +420,17 @@ def track_object_in_video(video_path, output_path=None):
                         
                         if innovation_pos < dead_zone_pos and innovation_angle < dead_zone_angle:
                             # Innovation too small - likely noise, use prediction only
-                            kf_state = kf_state_pred
+                            # BUT: zero velocities to prevent drift accumulation
+                            kf_state = kf_state_pred.copy()
+                            kf_state[2:4] = 0.0  # Zero linear velocity
+                            kf_state[5] = 0.0     # Zero angular velocity
                             kf_P = kf_P_pred
-                            center = pred_center
-                            angle = pred_angle
+                            center = kf_state[:2]
+                            angle = kf_state[4]
                             status = f"Tracking ({inliers}/{len(good_matches)} inliers) [DEAD ZONE]"
                         else:
                             # Real movement detected - proceed with Kalman update
                             
-                            # Abnormal motion suppression: check if measurement deviates too much
-                            # Calculate expected deviation (3σ)
-                            pos_sigma = np.sqrt(kf_P_pred[0,0] + kf_P_pred[1,1])
-                            angle_sigma = np.sqrt(kf_P_pred[4,4])
                             # Abnormal motion suppression: check if measurement deviates too much
                             # Calculate expected deviation (3σ)
                             pos_sigma = np.sqrt(kf_P_pred[0,0] + kf_P_pred[1,1])
