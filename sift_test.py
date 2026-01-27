@@ -249,7 +249,7 @@ def track_object_in_video(video_path, output_path=None):
     anchor_position = None
     anchor_angle = None
     stationary_frames = 0
-    stationary_threshold = 3  # Frames to confirm stationary state
+    stationary_threshold = 1  # Lock immediately when stationary detected
     
     # Reset video to start (only for file-based video)
     if not use_realsense:
@@ -486,14 +486,14 @@ def track_object_in_video(video_path, output_path=None):
                             position_innovation = np.linalg.norm(y[:2])
                             angle_innovation = abs(y[2])
                             
-                            # Check if object appears stationary
-                            is_pos_stationary = velocity_mag < 0.3 and position_innovation < 0.8
-                            is_rot_stationary = angular_velocity < 0.008 and angle_innovation < 0.015
+                            # Much stricter thresholds to prevent drift
+                            is_pos_stationary = velocity_mag < 0.2 and position_innovation < 0.4
+                            is_rot_stationary = angular_velocity < 0.005 and angle_innovation < 0.01
                             
                             if is_pos_stationary and is_rot_stationary:
                                 stationary_frames += 1
                                 
-                                # After confirming stationary, lock position
+                                # Lock position immediately or after minimal confirmation
                                 if stationary_frames >= stationary_threshold:
                                     if anchor_position is None:
                                         # First time becoming stationary - set anchor
