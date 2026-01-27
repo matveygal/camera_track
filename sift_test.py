@@ -245,12 +245,6 @@ def track_object_in_video(video_path, output_path=None):
     process_noise_omega = 0.05  # Process noise for angular velocity
     measurement_noise_base = 5.0  # Base measurement noise (modulated by inlier count)
     
-    # Position anchoring for drift prevention
-    anchor_position = None
-    anchor_angle = None
-    stationary_frames = 0
-    stationary_threshold = 1  # Lock immediately when stationary detected
-    
     # Reset video to start (only for file-based video)
     if not use_realsense:
         cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
@@ -412,146 +406,90 @@ def track_object_in_video(video_path, output_path=None):
                         # Measurement: [x, y, theta]
                         z = np.array([center[0], center[1], angle])
                         
-                        # Dead zone: ignore tiny measurements (they're just noise)
-                        # Check if measurement changed significantly from last position
-                        if last_corners is not None:
-                            last_center = np.mean(last_corners, axis=0)
-                            last_angle = np.arctan2(
-                                last_corners[1][1] - last_corners[0][1],
-                                last_corners[1][0] - last_corners[0][0]
-                            )
-                            
-                            pos_change = np.linalg.norm(z[:2] - last_center)
-                            angle_change = abs(z[2] - last_angle)
-                            if angle_change > np.pi:
-                                angle_change = 2*np.pi - angle_change
-                            
-                            # If change is tiny, skip Kalman update and use prediction
-                            if pos_change < 0.5 and angle_change < 0.008:
-                                # Use prediction only (stationary)
-                                center = kf_state_pred[:2]
-                                angle = kf_state_pred[4]
-                                kf_state = kf_state_pred
-                                kf_P = kf_P_pred
-                                # Set velocity to zero
-                                kf_state[2:4] = 0.0
-                                kf_state[5] = 0.0
-                                status = f"Tracking ({inliers}/{len(good_matches)} inliers) [DEAD ZONE]"
-                                # Skip to reconstruction
-                                R = np.array([
-                                    [np.cos(angle), -np.sin(angle)],
-                                    [np.sin(angle),  np.cos(angle)]
-                                ])\n                                corners = (box @ R.T) + center
-                                # Continue to next part
-                            else:
-                                # Significant movement - do normal Kalman update
-                                do_kalman_update = True
-                        else:
-                            do_kalman_update = True
+                        # Calculate innovation (measurement - prediction)
+                        pred_center = kf_state_pred[:2]
+                        pred_angle = kf_state_pred[4]
+                        innovation_pos = np.linalg.norm(z[:2] - pred_center)
+                        innovation_angle = abs(z[2] - pred_angle)
+                        if innovation_angle > np.pi:
+                            innovation_angle = 2*np.pi - innovation_angle
                         
-                        if 'do_kalman_update' in locals() and do_kalman_update:
-                        if 'do_kalman_update' in locals() and do_kalman_update:
-                            # Abnormal motion suppression: check if measurement deviates too much
-                            pred_center = kf_state_pred[:2]
-                            pred_angle = kf_state_pred[4]
+                        # Dead zone: skip Kalman update for sub-pixel noise
+                        dead_zone_pos = 0.5  # pixels
+                        dead_zone_angle = 0.008  # radians (~0.46 degrees)
                         
-                        measurement_deviation = np.linalg.norm(z[:2] - pred_center)
-                        angle_deviation = abs(z[2] - pred_angle)
-                        if angle_deviation > np.pi:
-                            angle_deviation = 2*np.pi - angle_deviation
-                        
-                        # Calculate expected deviation (2σ)
-                        pos_sigma = np.sqrt(kf_P_pred[0,0] + kf_P_pred[1,1])
-                        angle_sigma = np.sqrt(kf_P_pred[4,4])
-                        
-                        is_outlier = (measurement_deviation > 3*pos_sigma or 
-                                     angle_deviation > 3*angle_sigma)
-                        
-                        if is_outlier and last_corners is not None:
-                            # Reject outlier measurement, use prediction only
-                            center = pred_center
-                            angle = pred_angle
+                        if innovation_pos < dead_zone_pos and innovation_angle < dead_zone_angle:
+                            # Innovation too small - likely noise, use prediction only
                             kf_state = kf_state_pred
                             kf_P = kf_P_pred
-                            stationary_frames = 0  # Reset stationary when outlier detected
-                            anchor_position = None
-                            anchor_angle = None
-                            status = f"Tracking ({inliers}/{len(good_matches)} inliers) [OUTLIER REJECTED]"
+                            center = pred_center
+                            angle = pred_angle
+                            status = f"Tracking ({inliers}/{len(good_matches)} inliers) [DEAD ZONE]"
                         else:
-                            # Kalman Filter Update Step
-                            # Measurement matrix
-                            H = np.array([
-                                [1, 0, 0, 0, 0, 0],
-                                [0, 1, 0, 0, 0, 0],
-                                [0, 0, 0, 0, 1, 0]
-                            ])
+                            # Real movement detected - proceed with Kalman update
                             
-                            # Adaptive measurement noise based on inlier count
-                            # More inliers = more trust in measurement (lower noise)
-                            # Fewer inliers = less trust (higher noise)
-                            inlier_ratio = inliers / max(len(good_matches), 1)
-                            measurement_noise = measurement_noise_base / max(inlier_ratio, 0.1)
+                            # Abnormal motion suppression: check if measurement deviates too much
+                            # Calculate expected deviation (3σ)
+                            pos_sigma = np.sqrt(kf_P_pred[0,0] + kf_P_pred[1,1])
+                            angle_sigma = np.sqrt(kf_P_pred[4,4])
+                            # Abnormal motion suppression: check if measurement deviates too much
+                            # Calculate expected deviation (3σ)
+                            pos_sigma = np.sqrt(kf_P_pred[0,0] + kf_P_pred[1,1])
+                            angle_sigma = np.sqrt(kf_P_pred[4,4])
                             
-                            R = np.diag([measurement_noise, measurement_noise, 0.1])
+                            is_outlier = (innovation_pos > 3*pos_sigma or 
+                                         innovation_angle > 3*angle_sigma)
+                            is_outlier = (innovation_pos > 3*pos_sigma or 
+                                         innovation_angle > 3*angle_sigma)
                             
-                            # Innovation (measurement residual)
-                            y = z - H @ kf_state_pred
-                            
-                            # Normalize angle difference to [-π, π]
-                            if y[2] > np.pi:
-                                y[2] -= 2*np.pi
-                            elif y[2] < -np.pi:
-                                y[2] += 2*np.pi
-                            
-                            # Innovation covariance
-                            S = H @ kf_P_pred @ H.T + R
-                            
-                            # Kalman gain
-                            K = kf_P_pred @ H.T @ np.linalg.inv(S)
-                            
-                            # Update state
-                            kf_state = kf_state_pred + K @ y
-                            
-                            # Update covariance
-                            kf_P = (np.eye(6) - K @ H) @ kf_P_pred
-                            
-                            # Use Kalman filtered values
-                            center = kf_state[:2]
-                            angle = kf_state[4]
-                            
-                            # Aggressive stationary detection and position locking
-                            velocity_mag = np.linalg.norm(kf_state[2:4])
-                            angular_velocity = abs(kf_state[5])
-                            position_innovation = np.linalg.norm(y[:2])
-                            angle_innovation = abs(y[2])
-                            
-                            # Much stricter thresholds to prevent drift
-                            is_pos_stationary = velocity_mag < 0.2 and position_innovation < 0.4
-                            is_rot_stationary = angular_velocity < 0.005 and angle_innovation < 0.01
-                            
-                            if is_pos_stationary and is_rot_stationary:
-                                stationary_frames += 1
-                                
-                                # Lock position immediately or after minimal confirmation
-                                if stationary_frames >= stationary_threshold:
-                                    if anchor_position is None:
-                                        # First time becoming stationary - set anchor
-                                        anchor_position = center.copy()
-                                        anchor_angle = angle
-                                    
-                                    # Lock to anchor position - completely override Kalman
-                                    center = anchor_position
-                                    angle = anchor_angle
-                                    kf_state[:2] = anchor_position
-                                    kf_state[2:4] = 0.0  # Zero velocity
-                                    kf_state[4] = anchor_angle
-                                    kf_state[5] = 0.0  # Zero angular velocity
-                                    status = f"Tracking ({inliers}/{len(good_matches)} inliers) [LOCKED+ROT]"
+                            if is_outlier and last_corners is not None:
+                                # Reject outlier measurement, use prediction only
+                                center = pred_center
+                                angle = pred_angle
+                                kf_state = kf_state_pred
+                                kf_P = kf_P_pred
+                                status = f"Tracking ({inliers}/{len(good_matches)} inliers) [OUTLIER REJECTED]"
                             else:
-                                # Object is moving - clear anchor and stationary counter
-                                stationary_frames = 0
-                                anchor_position = None
-                                anchor_angle = None
+                                # Kalman Filter Update Step
+                                # Measurement matrix
+                                H = np.array([
+                                    [1, 0, 0, 0, 0, 0],
+                                    [0, 1, 0, 0, 0, 0],
+                                    [0, 0, 0, 0, 1, 0]
+                                ])
+                                
+                                # Adaptive measurement noise based on inlier count
+                                # More inliers = more trust in measurement (lower noise)
+                                # Fewer inliers = less trust (higher noise)
+                                inlier_ratio = inliers / max(len(good_matches), 1)
+                                measurement_noise = measurement_noise_base / max(inlier_ratio, 0.1)
+                                
+                                R = np.diag([measurement_noise, measurement_noise, 0.1])
+                                
+                                # Innovation (measurement residual)
+                                y = z - H @ kf_state_pred
+                                
+                                # Normalize angle difference to [-π, π]
+                                if y[2] > np.pi:
+                                    y[2] -= 2*np.pi
+                                elif y[2] < -np.pi:
+                                    y[2] += 2*np.pi
+                                
+                                # Innovation covariance
+                                S = H @ kf_P_pred @ H.T + R
+                                
+                                # Kalman gain
+                                K = kf_P_pred @ H.T @ np.linalg.inv(S)
+                                
+                                # Update state
+                                kf_state = kf_state_pred + K @ y
+                                
+                                # Update covariance
+                                kf_P = (np.eye(6) - K @ H) @ kf_P_pred
+                                
+                                # Use Kalman filtered values
+                                center = kf_state[:2]
+                                angle = kf_state[4]
                                 
                                 # Normal status
                                 if inliers < 12:
@@ -559,15 +497,14 @@ def track_object_in_video(video_path, output_path=None):
                                 else:
                                     status = f"Tracking ({inliers}/{len(good_matches)} inliers) [KF]"
                         
-                        # Reconstruct box with Kalman-filtered center and angle (if not already done in dead zone)
-                        if 'corners' not in locals() or corners is None:
-                            R = np.array([
-                                [np.cos(angle), -np.sin(angle)],
-                                [np.sin(angle),  np.cos(angle)]
-                            ])
-                            corners = (box @ R.T) + center
+                        # Reconstruct box with Kalman-filtered center and angle
+                        R = np.array([
+                            [np.cos(angle), -np.sin(angle)],
+                            [np.sin(angle),  np.cos(angle)]
+                        ])
+                        corners = (box @ R.T) + center
 
-                        # Update velocity for prediction
+                        # Update velocity for prediction nigger
                         if last_corners is not None:
                             new_velocity = corners - last_corners
                             velocity = alpha_velocity * new_velocity + (1 - alpha_velocity) * velocity
