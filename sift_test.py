@@ -487,33 +487,20 @@ def track_object_in_video(video_path, output_path=None):
                                 angle = kf_state[4]
                                 status = f"Tracking ({inliers}/{len(good_matches)} inliers) [DEAD ZONE {dead_zone_frames}/{lock_threshold}]"
                         else:
-                            # Innovation above threshold
+                            # Innovation above threshold - real movement detected
                             if is_locked:
-                                # Decrement counter when locked
-                                dead_zone_frames -= 1
-                                if dead_zone_frames <= 0:
-                                    # Unlock after enough movement
-                                    is_locked = False
-                                    dead_zone_frames = 0
-                                else:
-                                    # Still locked, hold position
-                                    kf_state = kf_state_pred.copy()
-                                    kf_state[:2] = anchor_position
-                                    kf_state[2:4] = 0.0
-                                    kf_state[4] = anchor_angle
-                                    kf_state[5] = 0.0
-                                    kf_P = kf_P_pred
-                                    center = anchor_position
-                                    angle = anchor_angle
-                                    status = f"Tracking ({inliers}/{len(good_matches)} inliers) [UNLOCKING {dead_zone_frames}]"
-                                    # Skip the Kalman update below
-                                    corners = (box @ np.array([[np.cos(angle), -np.sin(angle)], [np.sin(angle), np.cos(angle)]]).T) + center
-                            
-                            if not is_locked:
-                                # Real movement detected - reset counter
+                                # Unlock immediately on significant movement
+                                is_locked = False
                                 dead_zone_frames = 0
-                                
-                                # Track stable position for anchor updates
+                                # Reset stability tracking to start fresh
+                                stable_position = None
+                                stable_angle = None
+                                stability_frames = 0
+                            
+                            # Real movement - reset counter and track movement
+                            dead_zone_frames = 0
+                            
+                            # Track stable position for anchor updates
                                 # If position is stable at new location, update anchor
                                 if smoothed_position is not None:
                                     if stable_position is None:
