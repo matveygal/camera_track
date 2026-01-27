@@ -254,6 +254,12 @@ def track_object_in_video(video_path, output_path=None):
     lock_threshold = 5  # Frames needed to lock
     unlock_threshold = 3  # Frames needed to unlock
     
+    # Track stable position for anchor updates
+    stable_position = None
+    stable_angle = None
+    stability_frames = 0
+    stability_threshold = 10  # Frames needed to update anchor to new stable position
+    
     # Exponential moving average for smoothing
     smoothed_position = None
     smoothed_angle = None
@@ -506,6 +512,32 @@ def track_object_in_video(video_path, output_path=None):
                             if not is_locked:
                                 # Real movement detected - reset counter
                                 dead_zone_frames = 0
+                                
+                                # Track stable position for anchor updates
+                                # If position is stable at new location, update anchor
+                                if smoothed_position is not None:
+                                    if stable_position is None:
+                                        stable_position = smoothed_position.copy()
+                                        stable_angle = smoothed_angle
+                                        stability_frames = 1
+                                    else:
+                                        # Check if position is stable (within small radius)
+                                        pos_diff = np.linalg.norm(smoothed_position - stable_position)
+                                        angle_diff = abs(smoothed_angle - stable_angle)
+                                        if angle_diff > np.pi:
+                                            angle_diff = 2*np.pi - angle_diff
+                                        
+                                        if pos_diff < 0.5 and angle_diff < 0.01:  # Stable
+                                            stability_frames += 1
+                                            if stability_frames >= stability_threshold:
+                                                # Position has been stable for enough frames, update anchor
+                                                anchor_position = stable_position.copy()
+                                                anchor_angle = stable_angle
+                                                print(f"\rAnchor updated to new stable position: ({anchor_position[0]:.1f}, {anchor_position[1]:.1f})   ", end='')
+                                        else:  # Position changed, reset stability tracking
+                                            stable_position = smoothed_position.copy()
+                                            stable_angle = smoothed_angle
+                                            stability_frames = 1
                                 
                                 # Proceed with Kalman update
                             
