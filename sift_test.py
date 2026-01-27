@@ -445,8 +445,8 @@ def track_object_in_video(video_path, output_path=None):
             
             # Use best match across all views
             if best_H is not None and best_inliers >= max(6, int(len(best_matches) * 0.3)):
-                    
-                        # Store inlier matches for bundle adjustment
+                
+                # Store inlier matches for bundle adjustment
                         inlier_indices = np.ones(len(best_matches), dtype=bool)  # All are inliers from best match
                         inlier_src = np.float32([ref_features[best_view_idx][0][m.queryIdx].pt for m in best_matches]).reshape(-1, 1, 2)
                         inlier_dst = np.float32([kp[m.trainIdx].pt for m in best_matches]).reshape(-1, 1, 2)
@@ -479,6 +479,7 @@ def track_object_in_video(video_path, output_path=None):
                     
                     # Require sufficient inliers (at least 30% of matches)
                     min_inliers = max(6, int(len(good_matches) * 0.3))
+            
                     if inliers >= min_inliers:
                         # Transform reference corners to current frame
                         corners = cv2.perspectiveTransform(ref_corners.reshape(-1, 1, 2), H)
