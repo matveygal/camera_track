@@ -245,6 +245,12 @@ def track_object_in_video(video_path, output_path=None):
     process_noise_omega = 0.05  # Process noise for angular velocity
     measurement_noise_base = 5.0  # Base measurement noise (modulated by inlier count)
     
+    # Position anchoring for drift prevention
+    anchor_position = None
+    anchor_angle = None
+    stationary_frames = 0
+    stationary_threshold = 3  # Frames to confirm stationary state
+    
     # Reset video to start (only for file-based video)
     if not use_realsense:
         cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
@@ -428,6 +434,9 @@ def track_object_in_video(video_path, output_path=None):
                             angle = pred_angle
                             kf_state = kf_state_pred
                             kf_P = kf_P_pred
+                            stationary_frames = 0  # Reset stationary when outlier detected
+                            anchor_position = None
+                            anchor_angle = None
                             status = f"Tracking ({inliers}/{len(good_matches)} inliers) [OUTLIER REJECTED]"
                         else:
                             # Kalman Filter Update Step
@@ -471,27 +480,41 @@ def track_object_in_video(video_path, output_path=None):
                             center = kf_state[:2]
                             angle = kf_state[4]
                             
-                            # Stationary detection: zero velocities when motion is negligible
-                            # This prevents velocity bias accumulation and drift
+                            # Aggressive stationary detection and position locking
                             velocity_mag = np.linalg.norm(kf_state[2:4])
                             angular_velocity = abs(kf_state[5])
-                            
-                            # Check if measured innovation is small (object likely stationary)
                             position_innovation = np.linalg.norm(y[:2])
                             angle_innovation = abs(y[2])
                             
-                            # If both velocity and innovation are tiny, force zero velocity
-                            if velocity_mag < 0.5 and position_innovation < 1.0:
-                                kf_state[2:4] = 0.0  # Zero linear velocity
-                                status = f"Tracking ({inliers}/{len(good_matches)} inliers) [LOCKED]"
+                            # Check if object appears stationary
+                            is_pos_stationary = velocity_mag < 0.3 and position_innovation < 0.8
+                            is_rot_stationary = angular_velocity < 0.008 and angle_innovation < 0.015
                             
-                            if angular_velocity < 0.01 and angle_innovation < 0.02:
-                                kf_state[5] = 0.0  # Zero angular velocity
-                                if "[LOCKED]" in status:
+                            if is_pos_stationary and is_rot_stationary:
+                                stationary_frames += 1
+                                
+                                # After confirming stationary, lock position
+                                if stationary_frames >= stationary_threshold:
+                                    if anchor_position is None:
+                                        # First time becoming stationary - set anchor
+                                        anchor_position = center.copy()
+                                        anchor_angle = angle
+                                    
+                                    # Lock to anchor position - completely override Kalman
+                                    center = anchor_position
+                                    angle = anchor_angle
+                                    kf_state[:2] = anchor_position
+                                    kf_state[2:4] = 0.0  # Zero velocity
+                                    kf_state[4] = anchor_angle
+                                    kf_state[5] = 0.0  # Zero angular velocity
                                     status = f"Tracking ({inliers}/{len(good_matches)} inliers) [LOCKED+ROT]"
-                            
-                            # Add inlier info to status
-                            if "[LOCKED" not in status:
+                            else:
+                                # Object is moving - clear anchor and stationary counter
+                                stationary_frames = 0
+                                anchor_position = None
+                                anchor_angle = None
+                                
+                                # Normal status
                                 if inliers < 12:
                                     status = f"Tracking ({inliers}/{len(good_matches)} inliers) [LOW VIS]"
                                 else:
