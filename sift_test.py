@@ -201,27 +201,64 @@ def track_object_in_video(video_path, output_path=None):
     
     cv2.destroyWindow("Live Preview - Position Object")
     
-    # Let user select rotated ROI
-    print("Select the object to track (you can rotate after selection)")
-    roi_corners, roi_data, roi_rotation = select_rotated_roi(first_frame)
+    # Multi-view capture: let user capture object at multiple rotations
+    print("\n=== MULTI-VIEW CAPTURE ===")
+    print("You can capture the object at multiple rotations for better tracking")
+    print("Rotate the object (or camera) between captures")
+    print("Recommended: 0°, 45°, 90°, 135° rotations\n")
     
-    if roi_corners is None:
-        print("Error: No ROI selected")
-        if use_realsense:
-            pipeline.stop()
-        else:
-            cap.release()
-        return
+    # Store multiple reference views
+    ref_views = []  # List of (ref_gray, kp, des, w, h)
     
-    x, y, w, h = roi_data
+    capture_count = 0
+    while True:
+        # Let user select rotated ROI for this view
+        print(f"\nCapture #{capture_count + 1}:")
+        print("Select the object (you can rotate the selection box)")
+        roi_corners, roi_data, roi_rotation = select_rotated_roi(first_frame)
+        
+        if roi_corners is None:
+            if capture_count == 0:
+                print("Error: No ROI selected")
+                if use_realsense:
+                    pipeline.stop()
+                else:
+                    cap.release()
+                return
+            else:
+                print(f"Capture cancelled. Using {capture_count} view(s).")
+                break
+        
+        x, y, w, h = roi_data
+        
+        # Extract rotated reference image using perspective transform
+        src_pts = roi_corners.astype(np.float32)
+        dst_pts = np.float32([[0, 0], [w, 0], [w, h], [0, h]])
+        M = cv2.getPerspectiveTransform(src_pts, dst_pts)
+        ref_img = cv2.warpPerspective(first_frame, M, (w, h))
+        ref_gray = cv2.cvtColor(ref_img, cv2.COLOR_BGR2GRAY)
+        
+        # Show the captured reference
+        display = ref_img.copy()
+        cv2.putText(display, f"Capture #{capture_count + 1}", (10, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+        cv2.imshow("Captured Reference", display)
+        cv2.waitKey(500)
+        
+        ref_views.append((ref_gray, w, h, roi_rotation))
+        capture_count += 1
+        
+        # Ask if user wants to capture more views
+        print(f"Captured view #{capture_count} at {roi_rotation}° rotation")
+        response = input("Capture another view? (y/N): ").strip().lower()
+        if response != 'y':
+            break
     
-    # Extract rotated reference image using perspective transform
-    # Map the rotated corners back to an axis-aligned rectangle
-    src_pts = roi_corners.astype(np.float32)
-    dst_pts = np.float32([[0, 0], [w, 0], [w, h], [0, h]])
-    M = cv2.getPerspectiveTransform(src_pts, dst_pts)
-    ref_img = cv2.warpPerspective(first_frame, M, (w, h))
-    ref_gray = cv2.cvtColor(ref_img, cv2.COLOR_BGR2GRAY)
+    cv2.destroyAllWindows()
+    print(f"\nTotal views captured: {capture_count}")
+    
+    # Use dimensions from first view as canonical size
+    ref_gray, w, h, _ = ref_views[0]
     
     # Store reference corners in reference image coordinate system
     ref_corners = np.float32([
@@ -256,14 +293,24 @@ def track_object_in_video(video_path, output_path=None):
                                    patchSize=31)
         print("Using ORB detector")
     
-    # Compute reference keypoints and descriptors
-    kp_ref, des_ref = detector.detectAndCompute(ref_gray, None)
+    # Compute features for all reference views
+    ref_features = []  # List of (kp, des) tuples
+    total_features = 0
     
-    if des_ref is None or len(kp_ref) < 4:
-        print("Error: Not enough features in reference image. Choose a more textured object.")
+    for i, (ref_gray_view, w_view, h_view, rotation) in enumerate(ref_views):
+        kp, des = detector.detectAndCompute(ref_gray_view, None)
+        if des is not None and len(kp) >= 4:
+            ref_features.append((kp, des))
+            total_features += len(kp)
+            print(f"View #{i+1} ({rotation}°): {len(kp)} features")
+        else:
+            print(f"Warning: View #{i+1} has insufficient features, skipping")
+    
+    if len(ref_features) == 0:
+        print("Error: No views have sufficient features. Choose more textured objects.")
         return
     
-    print(f"Reference features: {len(kp_ref)}")
+    print(f"\nTotal reference features across all views: {total_features}")
     
     # BFMatcher - use L2 for SIFT, Hamming for ORB
     try:
@@ -358,60 +405,77 @@ def track_object_in_video(video_path, output_path=None):
         ratio_threshold = 0.85 if lost_frames > 3 else 0.8
         
         if des is not None and len(kp) >= 4:
-            # Match descriptors
-            matches = matcher.knnMatch(des_ref, des, k=2)
+            # Match against all reference views and find best match
+            best_matches = []
+            best_inliers = 0
+            best_H = None
+            best_view_idx = 0
             
-            # Apply Lowe's ratio test (adaptive threshold)
-            good_matches = []
-            for match_pair in matches:
-                if len(match_pair) == 2:
-                    m, n = match_pair
-                    if m.distance < ratio_threshold * n.distance:
-                        good_matches.append(m)
+            for view_idx, (kp_ref, des_ref) in enumerate(ref_features):
+                # Match descriptors
+                matches = matcher.knnMatch(des_ref, des, k=2)
+                
+                # Apply Lowe's ratio test (adaptive threshold)
+                good_matches = []
+                for match_pair in matches:
+                    if len(match_pair) == 2:
+                        m, n = match_pair
+                        if m.distance < ratio_threshold * n.distance:
+                            good_matches.append(m)
+                
+                # Need at least 6 matches for more robust homography
+                if len(good_matches) >= 6:
+                    # Extract matched point coordinates
+                    src_pts = np.float32([kp_ref[m.queryIdx].pt for m in good_matches]).reshape(-1, 1, 2)
+                    dst_pts = np.float32([kp[m.trainIdx].pt for m in good_matches]).reshape(-1, 1, 2)
+                    
+                    # Find homography with more lenient RANSAC
+                    H, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 
+                                                 ransacReprojThreshold=8.0,
+                                                 maxIters=2000,
+                                                 confidence=0.995)
+                    
+                    if H is not None:
+                        inliers = np.sum(mask)
+                        if inliers > best_inliers:
+                            best_inliers = inliers
+                            best_H = H
+                            best_matches = good_matches
+                            best_view_idx = view_idx
             
-            # Need at least 6 matches for more robust homography
-            if len(good_matches) >= 6:
-                # Extract matched point coordinates
-                src_pts = np.float32([kp_ref[m.queryIdx].pt for m in good_matches]).reshape(-1, 1, 2)
-                dst_pts = np.float32([kp[m.trainIdx].pt for m in good_matches]).reshape(-1, 1, 2)
-                
-                # Find homography with more lenient RANSAC
-                H, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 
-                                             ransacReprojThreshold=8.0,  # More lenient
-                                             maxIters=2000,  # More iterations
-                                             confidence=0.995)
-                
-                if H is not None:
-                    # Count inliers
-                    inliers = np.sum(mask)
+            # Use best match across all views
+            if best_H is not None and best_inliers >= max(6, int(len(best_matches) * 0.3)):
                     
-                    # Store inlier matches for bundle adjustment
-                    inlier_indices = mask.ravel() == 1
-                    inlier_src = src_pts[inlier_indices]
-                    inlier_dst = dst_pts[inlier_indices]
-                    match_buffer.append((inlier_src, inlier_dst))
-                    if len(match_buffer) > bundle_interval:
-                        match_buffer.pop(0)
-                    
-                    # Bundle adjustment: every N frames, pool matches and re-estimate
-                    if frame_count % bundle_interval == 0 and len(match_buffer) >= 10:
-                        # Pool all inlier matches from buffer
-                        all_src = np.vstack([src for src, dst in match_buffer])
-                        all_dst = np.vstack([dst for src, dst in match_buffer])
+                        # Store inlier matches for bundle adjustment
+                        inlier_indices = np.ones(len(best_matches), dtype=bool)  # All are inliers from best match
+                        inlier_src = np.float32([ref_features[best_view_idx][0][m.queryIdx].pt for m in best_matches]).reshape(-1, 1, 2)
+                        inlier_dst = np.float32([kp[m.trainIdx].pt for m in best_matches]).reshape(-1, 1, 2)
+                        match_buffer.append((inlier_src, inlier_dst))
+                        if len(match_buffer) > bundle_interval:
+                            match_buffer.pop(0)
                         
-                        # Compute refined homography from pooled matches
-                        H_refined, mask_refined = cv2.findHomography(
-                            all_src, all_dst, cv2.RANSAC,
-                            ransacReprojThreshold=5.0,  # Stricter for pooled data
-                            maxIters=3000,
-                            confidence=0.999
-                        )
+                        # Bundle adjustment: every N frames, pool matches and re-estimate
+                        if frame_count % bundle_interval == 0 and len(match_buffer) >= 10:
+                            # Pool all inlier matches from buffer
+                            all_src = np.vstack([src for src, dst in match_buffer])
+                            all_dst = np.vstack([dst for src, dst in match_buffer])
+                            
+                            # Compute refined homography from pooled matches
+                            H_refined, mask_refined = cv2.findHomography(
+                                all_src, all_dst, cv2.RANSAC,
+                                ransacReprojThreshold=5.0,  # Stricter for pooled data
+                                maxIters=3000,
+                                confidence=0.999
+                            )
+                            
+                            if H_refined is not None:
+                                canonical_H = H_refined
+                                status = f"Tracking ({best_inliers}/{len(best_matches)} inliers, view {best_view_idx+1}) [BUNDLE]"
                         
-                        if H_refined is not None:
-                            canonical_H = H_refined
-                            status = f"Tracking ({inliers}/{len(good_matches)} inliers) [BUNDLE]"
-                    
-                    # Use current H for tracking (don't lag behind with canonical)
+                        # Use current H for tracking (don't lag behind with canonical)
+                        H = best_H
+                        inliers = best_inliers
+                        good_matches = best_matches
                     
                     # Require sufficient inliers (at least 30% of matches)
                     min_inliers = max(6, int(len(good_matches) * 0.3))
@@ -580,9 +644,9 @@ def track_object_in_video(video_path, output_path=None):
                                 kp_ref = kp_new
                                 des_ref = des_new
                                 frames_since_update = 0
-                                status = f"Tracking ({inliers}/{len(good_matches)} inliers) [UPDATED]"
+                                status = f"Tracking ({inliers}/{len(good_matches)} inliers, view {best_view_idx+1}) [UPDATED]"
                             else:
-                                status = f"Tracking ({inliers}/{len(good_matches)} inliers)"
+                                status = f"Tracking ({inliers}/{len(good_matches)} inliers, view {best_view_idx+1})"
                         else:
                             status = f"Tracking ({inliers}/{len(good_matches)} inliers)"
                         
