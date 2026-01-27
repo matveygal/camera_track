@@ -249,6 +249,7 @@ def track_object_in_video(video_path, output_path=None):
     anchor_position = None
     anchor_angle = None
     dead_zone_frames = 0
+    first_detection_set = False  # Track if we've set the initial anchor
     
     # Reset video to start (only for file-based video)
     if not use_realsense:
@@ -379,6 +380,12 @@ def track_object_in_video(video_path, output_path=None):
                             [-half_w,  half_h]
                         ])
                         
+                        # Set initial anchor from very first detection (before Kalman)
+                        if not first_detection_set:
+                            anchor_position = center.copy()
+                            anchor_angle = angle
+                            first_detection_set = True
+                        
                         # Initialize Kalman Filter on first detection
                         if kf_state is None:
                             kf_state = np.array([center[0], center[1], 0.0, 0.0, angle, 0.0])
@@ -427,14 +434,10 @@ def track_object_in_video(video_path, output_path=None):
                             # Innovation too small - likely noise
                             dead_zone_frames += 1
                             
-                            # After 2 frames in dead zone, set and lock to anchor
+                            # After 2 frames in dead zone, lock to initial anchor
                             if dead_zone_frames >= 2:
-                                if anchor_position is None:
-                                    # First time locking - set anchor from current state
-                                    anchor_position = kf_state_pred[:2].copy()
-                                    anchor_angle = kf_state_pred[4]
-                                
-                                # Completely lock to anchor
+                                # Use the anchor from first detection (never update it)
+                                # This prevents bias accumulation
                                 kf_state = kf_state_pred.copy()
                                 kf_state[:2] = anchor_position
                                 kf_state[2:4] = 0.0  # Zero linear velocity
@@ -454,10 +457,9 @@ def track_object_in_video(video_path, output_path=None):
                                 angle = kf_state[4]
                                 status = f"Tracking ({inliers}/{len(good_matches)} inliers) [DEAD ZONE]"
                         else:
-                            # Real movement detected - clear anchor and dead zone counter
+                            # Real movement detected - clear dead zone counter
+                            # But keep the original anchor for next time
                             dead_zone_frames = 0
-                            anchor_position = None
-                            anchor_angle = None
                             
                             # Proceed with Kalman update
                             
