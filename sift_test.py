@@ -232,40 +232,19 @@ def track_object_in_video(video_path, output_path=None):
     bundle_interval = 30  # Re-estimate homography every N frames
     canonical_H = None  # Refined homography from bundle adjustment
     
-    # Dead zone for drift prevention
-    movement_history = []  # Track recent movement magnitudes
-    is_stationary = False
-    stationary_threshold = 1.5  # pixels - below this is considered noise
-    stationary_frames_needed = 5  # frames of low movement to be considered stationary
-    anchor_position = None  # Locked position when stationary
-    
-    # Rotational dead zone
-    angle_history = []  # Track recent angle changes
-    is_rotationally_stationary = False
-    angle_threshold = 0.5  # degrees - below this is considered noise
-    anchor_angle = None  # Locked angle when rotationally stationary
-    
-    # Speed limit to prevent tracking errors
-    max_speed = 5.0  # pixels per frame - anything above is likely a tracking error
-    max_rotation_speed = 2.0  # degrees per frame    
-    # Kalman Filter state: [x, y, vx, vy, θ, ω]
-    kf_state = None  # Will be initialized on first good measurement
+    # Kalman Filter for position and rotation tracking
+    # State: [x, y, vx, vy, theta, omega] - position, velocity, angle, angular velocity
+    kf_state = None  # Will be initialized on first detection
     kf_P = None  # Covariance matrix
     dt = 1.0  # Time step (1 frame)
     
-    # Process noise (how much we trust motion model)
-    process_noise_pos = 0.5  # Position process noise
-    process_noise_vel = 2.0  # Velocity process noise
-    process_noise_angle = 0.01  # Angle process noise (radians)
-    process_noise_omega = 0.05  # Angular velocity process noise
+    # Kalman parameters
+    process_noise_pos = 0.5  # Process noise for position
+    process_noise_vel = 2.0  # Process noise for velocity
+    process_noise_angle = 0.01  # Process noise for angle
+    process_noise_omega = 0.05  # Process noise for angular velocity
+    measurement_noise_base = 5.0  # Base measurement noise (modulated by inlier count)
     
-    # Measurement noise (how much we trust observations)
-    measurement_noise_pos = 2.0  # Will be adjusted based on inlier count
-    measurement_noise_angle = 0.02  # Angle measurement noise
-    
-    # Abnormal motion detection
-    motion_buffer = []  # Store recent velocities for outlier detection
-    motion_buffer_size = 10    
     # Reset video to start (only for file-based video)
     if not use_realsense:
         cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
@@ -394,120 +373,116 @@ def track_object_in_video(video_path, output_path=None):
                             [ half_w,  half_h],
                             [-half_w,  half_h]
                         ])
-                        corners = (box @ R.T) + center
-
-                        # Kalman Filter: predict and update
+                        
+                        # Initialize Kalman Filter on first detection
                         if kf_state is None:
-                            # Initialize Kalman Filter on first good measurement
                             kf_state = np.array([center[0], center[1], 0.0, 0.0, angle, 0.0])
-                            kf_P = np.eye(6) * 10.0  # Initial uncertainty
+                            kf_P = np.eye(6) * 10.0
+                        
+                        # Kalman Filter Prediction Step
+                        # State transition matrix (constant velocity model)
+                        F = np.array([
+                            [1, 0, dt, 0, 0, 0],
+                            [0, 1, 0, dt, 0, 0],
+                            [0, 0, 1, 0, 0, 0],
+                            [0, 0, 0, 1, 0, 0],
+                            [0, 0, 0, 0, 1, dt],
+                            [0, 0, 0, 0, 0, 1]
+                        ])
+                        
+                        # Predict state
+                        kf_state_pred = F @ kf_state
+                        
+                        # Process noise covariance
+                        Q = np.diag([
+                            process_noise_pos, process_noise_pos,
+                            process_noise_vel, process_noise_vel,
+                            process_noise_angle, process_noise_omega
+                        ])
+                        
+                        # Predict covariance
+                        kf_P_pred = F @ kf_P @ F.T + Q
+                        
+                        # Measurement: [x, y, theta]
+                        z = np.array([center[0], center[1], angle])
+                        
+                        # Abnormal motion suppression: check if measurement deviates too much
+                        pred_center = kf_state_pred[:2]
+                        pred_angle = kf_state_pred[4]
+                        
+                        measurement_deviation = np.linalg.norm(z[:2] - pred_center)
+                        angle_deviation = abs(z[2] - pred_angle)
+                        if angle_deviation > np.pi:
+                            angle_deviation = 2*np.pi - angle_deviation
+                        
+                        # Calculate expected deviation (2σ)
+                        pos_sigma = np.sqrt(kf_P_pred[0,0] + kf_P_pred[1,1])
+                        angle_sigma = np.sqrt(kf_P_pred[4,4])
+                        
+                        is_outlier = (measurement_deviation > 3*pos_sigma or 
+                                     angle_deviation > 3*angle_sigma)
+                        
+                        if is_outlier and last_corners is not None:
+                            # Reject outlier measurement, use prediction only
+                            center = pred_center
+                            angle = pred_angle
+                            kf_state = kf_state_pred
+                            kf_P = kf_P_pred
+                            status = f"Tracking ({inliers}/{len(good_matches)} inliers) [OUTLIER REJECTED]"
                         else:
-                            # Kalman Prediction Step
-                            # State transition: x' = x + vx*dt, y' = y + vy*dt, θ' = θ + ω*dt
-                            F = np.array([
-                                [1, 0, dt, 0,  0, 0],
-                                [0, 1, 0,  dt, 0, 0],
-                                [0, 0, 1,  0,  0, 0],
-                                [0, 0, 0,  1,  0, 0],
-                                [0, 0, 0,  0,  1, dt],
-                                [0, 0, 0,  0,  0, 1]
+                            # Kalman Filter Update Step
+                            # Measurement matrix
+                            H = np.array([
+                                [1, 0, 0, 0, 0, 0],
+                                [0, 1, 0, 0, 0, 0],
+                                [0, 0, 0, 0, 1, 0]
                             ])
-                            kf_state = F @ kf_state
                             
-                            # Adjust process noise based on visibility
-                            visibility_score = min(1.0, inliers / 20.0)
-                            Q = np.diag([
-                                process_noise_pos / (visibility_score + 0.1),
-                                process_noise_pos / (visibility_score + 0.1),
-                                process_noise_vel / (visibility_score + 0.1),
-                                process_noise_vel / (visibility_score + 0.1),
-                                process_noise_angle / (visibility_score + 0.1),
-                                process_noise_omega / (visibility_score + 0.1)
-                            ])
-                            kf_P = F @ kf_P @ F.T + Q
+                            # Adaptive measurement noise based on inlier count
+                            # More inliers = more trust in measurement (lower noise)
+                            # Fewer inliers = less trust (higher noise)
+                            inlier_ratio = inliers / max(len(good_matches), 1)
+                            measurement_noise = measurement_noise_base / max(inlier_ratio, 0.1)
                             
-                            # Measurement from homography
-                            z = np.array([center[0], center[1], angle])
-                            predicted_pos = kf_state[:2]
-                            predicted_angle = kf_state[4]
+                            R = np.diag([measurement_noise, measurement_noise, 0.1])
                             
-                            # Abnormal motion detection
-                            position_deviation = np.linalg.norm(center - predicted_pos)
-                            angle_diff = abs(angle - predicted_angle)
-                            if angle_diff > np.pi:
-                                angle_diff = 2*np.pi - angle_diff
+                            # Innovation (measurement residual)
+                            y = z - H @ kf_state_pred
                             
-                            # Check if measurement is abnormal (likely occlusion/error)
-                            is_abnormal = False
-                            if len(motion_buffer) >= 5:
-                                # Check against recent motion trends
-                                recent_velocities = np.array([v[:2] for v in motion_buffer[-5:]])
-                                vel_mean = np.mean(recent_velocities, axis=0)
-                                vel_std = np.std(recent_velocities, axis=0) + 1e-6
-                                current_vel = center - predicted_pos
-                                deviation = np.abs(current_vel - vel_mean) / vel_std
-                                if np.any(deviation > 2.5) or position_deviation > 15.0:
-                                    is_abnormal = True
+                            # Normalize angle difference to [-π, π]
+                            if y[2] > np.pi:
+                                y[2] -= 2*np.pi
+                            elif y[2] < -np.pi:
+                                y[2] += 2*np.pi
                             
-                            # Kalman Update Step (only if not abnormal)
-                            if not is_abnormal and inliers >= 6:
-                                # Measurement matrix H: we observe x, y, θ
-                                H = np.array([
-                                    [1, 0, 0, 0, 0, 0],
-                                    [0, 1, 0, 0, 0, 0],
-                                    [0, 0, 0, 0, 1, 0]
-                                ])
-                                
-                                # Measurement noise adjusted by visibility
-                                R = np.diag([
-                                    measurement_noise_pos * (1.0 / (visibility_score + 0.1)),
-                                    measurement_noise_pos * (1.0 / (visibility_score + 0.1)),
-                                    measurement_noise_angle
-                                ])
-                                
-                                # Innovation
-                                y = z - H @ kf_state
-                                # Normalize angle difference
-                                if y[2] > np.pi:
-                                    y[2] -= 2*np.pi
-                                elif y[2] < -np.pi:
-                                    y[2] += 2*np.pi
-                                
-                                # Innovation covariance
-                                S = H @ kf_P @ H.T + R
-                                # Kalman gain
-                                K = kf_P @ H.T @ np.linalg.inv(S)
-                                # Update state
-                                kf_state = kf_state + K @ y
-                                # Update covariance
-                                kf_P = (np.eye(6) - K @ H) @ kf_P
-                                
-                                status = f"Tracking ({inliers}/{len(good_matches)} inliers) [KF]"
-                            else:
-                                # Use prediction only (occlusion or abnormal motion)
-                                if is_abnormal:
-                                    status = f"Tracking ({inliers}/{len(good_matches)} inliers) [KF-REJECT]"
-                                else:
-                                    status = f"Tracking ({inliers}/{len(good_matches)} inliers) [KF-PREDICT]"
+                            # Innovation covariance
+                            S = H @ kf_P_pred @ H.T + R
                             
-                            # Update motion buffer
-                            motion_buffer.append(kf_state[2:4].copy())
-                            if len(motion_buffer) > motion_buffer_size:
-                                motion_buffer.pop(0)
+                            # Kalman gain
+                            K = kf_P_pred @ H.T @ np.linalg.inv(S)
                             
-                            # Use Kalman filtered position and angle
+                            # Update state
+                            kf_state = kf_state_pred + K @ y
+                            
+                            # Update covariance
+                            kf_P = (np.eye(6) - K @ H) @ kf_P_pred
+                            
+                            # Use Kalman filtered values
                             center = kf_state[:2]
                             angle = kf_state[4]
                             
-                            # Reconstruct corners with Kalman filtered values
-                            R = np.array([
-                                [np.cos(angle), -np.sin(angle)],
-                                [np.sin(angle),  np.cos(angle)]
-                            ])
-                            corners = (box @ R.T) + center
+                            # Add inlier info to status
+                            if inliers < 12:
+                                status = f"Tracking ({inliers}/{len(good_matches)} inliers) [LOW VIS]"
+                            else:
+                                status = f"Tracking ({inliers}/{len(good_matches)} inliers) [KF]"
                         
-                        # Note: Speed limiting and dead zones removed - Kalman Filter handles
-                        # noise, drift, and abnormal motion internally
+                        # Reconstruct box with Kalman-filtered center and angle
+                        R = np.array([
+                            [np.cos(angle), -np.sin(angle)],
+                            [np.sin(angle),  np.cos(angle)]
+                        ])
+                        corners = (box @ R.T) + center
 
                         # Update velocity for prediction nigger
                         if last_corners is not None:
