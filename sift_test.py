@@ -239,6 +239,12 @@ def track_object_in_video(video_path, output_path=None):
     stationary_frames_needed = 5  # frames of low movement to be considered stationary
     anchor_position = None  # Locked position when stationary
     
+    # Rotational dead zone
+    angle_history = []  # Track recent angle changes
+    is_rotationally_stationary = False
+    angle_threshold = 0.5  # degrees - below this is considered noise
+    anchor_angle = None  # Locked angle when rotationally stationary
+    
     # Reset video to start (only for file-based video)
     if not use_realsense:
         cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
@@ -376,6 +382,19 @@ def track_object_in_video(video_path, output_path=None):
                             if len(movement_history) > 10:
                                 movement_history.pop(0)
                             
+                            # Track angle changes
+                            last_angle = np.arctan2(
+                                last_corners[1][1] - last_corners[0][1],
+                                last_corners[1][0] - last_corners[0][0]
+                            )
+                            angle_change = abs(np.degrees(angle - last_angle))
+                            # Normalize to 0-180 range
+                            if angle_change > 180:
+                                angle_change = 360 - angle_change
+                            angle_history.append(angle_change)
+                            if len(angle_history) > 10:
+                                angle_history.pop(0)
+                            
                             # Check if stationary (consistently low movement)
                             if len(movement_history) >= stationary_frames_needed:
                                 avg_movement = np.mean(movement_history[-stationary_frames_needed:])
@@ -388,12 +407,37 @@ def track_object_in_video(video_path, output_path=None):
                                         is_stationary = True
                                     # Use anchored position
                                     center = anchor_position
-                                    corners = (box @ R.T) + center
                                     status = f"Tracking ({inliers}/{len(good_matches)} inliers) [LOCKED]"
                                 else:
                                     # Object is moving - allow tracking
                                     is_stationary = False
                                     anchor_position = None
+                            
+                            # Check if rotationally stationary
+                            if len(angle_history) >= stationary_frames_needed:
+                                avg_angle_change = np.mean(angle_history[-stationary_frames_needed:])
+                                
+                                if avg_angle_change < angle_threshold:
+                                    # Object is rotationally stationary - freeze angle
+                                    if not is_rotationally_stationary:
+                                        # Just became rotationally stationary - set anchor
+                                        anchor_angle = angle
+                                        is_rotationally_stationary = True
+                                    # Use anchored angle
+                                    angle = anchor_angle
+                                    if is_stationary:
+                                        status = f"Tracking ({inliers}/{len(good_matches)} inliers) [LOCKED+ROT]"
+                                else:
+                                    # Object is rotating - allow tracking
+                                    is_rotationally_stationary = False
+                                    anchor_angle = None
+                        
+                        # Reconstruct box with (possibly locked) center and angle
+                        R = np.array([
+                            [np.cos(angle), -np.sin(angle)],
+                            [np.sin(angle),  np.cos(angle)]
+                        ])
+                        corners = (box @ R.T) + center
 
                         # Update velocity for prediction nigger
                         if last_corners is not None:
