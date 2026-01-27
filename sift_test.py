@@ -130,112 +130,19 @@ def track_object_in_video(video_path, output_path=None):
     
     cv2.destroyWindow("Live Preview - Position Object")
     
-    # Multi-view capture: capture object at multiple rotations
-    print("\n=== MULTI-VIEW CAPTURE MODE ===")
-    print("You will capture the object at different rotations:")
-    print("Suggested angles: 0°, 45°, 90°, 135°, 180°")
-    print("This will improve tracking quality significantly!\n")
+    # Let user select ROI
+    print("Select the object to track, then press ENTER or SPACE")
+    roi = cv2.selectROI("Select Object", first_frame, fromCenter=False, showCrosshair=True)
+    cv2.destroyWindow("Select Object")
     
-    rotation_angles = [0, 45, 90, 135, 180]
-    captured_views = []
-    all_keypoints = []
-    all_descriptors = []
-    
-    # Initialize feature detector first
-    try:
-        detector = cv2.SIFT_create(nfeatures=3000, contrastThreshold=0.03)
-        print("Using SIFT detector (best for rotation/scale)")
-    except:
-        detector = cv2.ORB_create(nfeatures=3000, 
-                                   scaleFactor=1.2, 
-                                   nlevels=10, 
-                                   edgeThreshold=10,
-                                   patchSize=31)
-        print("Using ORB detector")
-    
-    for angle_idx, angle in enumerate(rotation_angles):
-        print(f"\n--- View {angle_idx + 1}/{len(rotation_angles)}: Rotate object to ~{angle}° ---")
-        print("Position the object, then press SPACE to capture")
-        print("Press 's' to skip this angle, 'q' to finish with current views")
-        
-        # Show live preview for positioning
-        view_frame = None
-        while True:
-            if use_realsense:
-                frame = get_realsense_frame(pipeline)
-                if frame is None:
-                    break
-            else:
-                ret, frame = cap.read()
-                if not ret:
-                    break
-            
-            preview = frame.copy()
-            cv2.putText(preview, f"Rotation: ~{angle} degrees ({angle_idx+1}/{len(rotation_angles)})", 
-                        (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
-            cv2.putText(preview, "SPACE=Capture | s=Skip | q=Finish", (10, 60),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-            cv2.imshow("Multi-View Capture", preview)
-            
-            key = cv2.waitKey(1) & 0xFF
-            if key == ord(' '):
-                view_frame = frame.copy()
-                print(f"View at {angle}° captured!")
-                break
-            elif key == ord('s'):
-                print(f"Skipped {angle}° view")
-                view_frame = None
-                break
-            elif key == ord('q'):
-                print("Finishing with current views...")
-                view_frame = None
-                break
-        
-        if view_frame is None and key == ord('q'):
-            break
-        
-        if view_frame is not None:
-            # Let user select ROI for this view
-            print(f"Select the object ROI for {angle}° view")
-            roi = cv2.selectROI("Select Object", view_frame, fromCenter=False, showCrosshair=True)
-            cv2.destroyWindow("Select Object")
-            
-            x, y, w, h = [int(v) for v in roi]
-            if w > 0 and h > 0:
-                # Extract and process this view
-                ref_img = view_frame[y:y+h, x:x+w]
-                ref_gray = cv2.cvtColor(ref_img, cv2.COLOR_BGR2GRAY)
-                
-                # Compute features for this view
-                kp, des = detector.detectAndCompute(ref_gray, None)
-                
-                if des is not None and len(kp) > 0:
-                    captured_views.append({
-                        'angle': angle,
-                        'roi': (x, y, w, h),
-                        'image': ref_img,
-                        'keypoints': kp,
-                        'descriptors': des
-                    })
-                    all_keypoints.extend(kp)
-                    all_descriptors.append(des)
-                    print(f"✓ {angle}° view: {len(kp)} features extracted")
-                else:
-                    print(f"✗ {angle}° view: No features found")
-            else:
-                print(f"✗ {angle}° view: No ROI selected")
-    
-    cv2.destroyWindow("Multi-View Capture")
-    
-    if len(captured_views) == 0:
-        print("Error: No views captured")
+    x, y, w, h = [int(v) for v in roi]
+    if w == 0 or h == 0:
+        print("Error: No ROI selected")
         return
     
-    print(f"\n=== Captured {len(captured_views)} views ===")
-    
-    # Use first view for reference dimensions
-    first_view = captured_views[0]
-    x, y, w, h = first_view['roi']
+    # Extract reference image
+    ref_img = first_frame[y:y+h, x:x+w]
+    ref_gray = cv2.cvtColor(ref_img, cv2.COLOR_BGR2GRAY)
     
     # Store reference corners in reference image coordinate system
     ref_corners = np.float32([
@@ -244,7 +151,6 @@ def track_object_in_video(video_path, output_path=None):
         [w, h],
         [0, h]
     ]).reshape(-1, 2)
-    
     # Save initial shape for regularization
     def get_sides_and_angles(corners):
         sides = [np.linalg.norm(corners[i] - corners[(i+1)%4]) for i in range(4)]
@@ -258,14 +164,21 @@ def track_object_in_video(video_path, output_path=None):
     initial_sides, initial_angles = get_sides_and_angles(ref_corners)
     initial_shape = (initial_sides, initial_angles)
     
-    # Combine all descriptors from all views
-    if len(all_descriptors) > 0:
-        des_ref = np.vstack(all_descriptors)
-        kp_ref = all_keypoints
-        print(f"Total reference features: {len(kp_ref)}")
-    else:
-        print("Error: No descriptors extracted from any view")
-        return
+    # Initialize feature detector - using SIFT for better rotation/scale invariance
+    # Fallback to ORB if SIFT not available
+    try:
+        detector = cv2.SIFT_create(nfeatures=3000, contrastThreshold=0.03)
+        print("Using SIFT detector (best for rotation/scale)")
+    except:
+        detector = cv2.ORB_create(nfeatures=3000, 
+                                   scaleFactor=1.2, 
+                                   nlevels=10, 
+                                   edgeThreshold=10,
+                                   patchSize=31)
+        print("Using ORB detector")
+    
+    # Compute reference keypoints and descriptors
+    kp_ref, des_ref = detector.detectAndCompute(ref_gray, None)
     
     if des_ref is None or len(kp_ref) < 4:
         print("Error: Not enough features in reference image. Choose a more textured object.")
@@ -334,8 +247,25 @@ def track_object_in_video(video_path, output_path=None):
     
     # Speed limit to prevent tracking errors
     max_speed = 5.0  # pixels per frame - anything above is likely a tracking error
-    max_rotation_speed = 2.0  # degrees per frame
+    max_rotation_speed = 2.0  # degrees per frame    
+    # Kalman Filter state: [x, y, vx, vy, θ, ω]
+    kf_state = None  # Will be initialized on first good measurement
+    kf_P = None  # Covariance matrix
+    dt = 1.0  # Time step (1 frame)
     
+    # Process noise (how much we trust motion model)
+    process_noise_pos = 0.5  # Position process noise
+    process_noise_vel = 2.0  # Velocity process noise
+    process_noise_angle = 0.01  # Angle process noise (radians)
+    process_noise_omega = 0.05  # Angular velocity process noise
+    
+    # Measurement noise (how much we trust observations)
+    measurement_noise_pos = 2.0  # Will be adjusted based on inlier count
+    measurement_noise_angle = 0.02  # Angle measurement noise
+    
+    # Abnormal motion detection
+    motion_buffer = []  # Store recent velocities for outlier detection
+    motion_buffer_size = 10    
     # Reset video to start (only for file-based video)
     if not use_realsense:
         cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
@@ -465,6 +395,116 @@ def track_object_in_video(video_path, output_path=None):
                             [-half_w,  half_h]
                         ])
                         corners = (box @ R.T) + center
+
+                        # Kalman Filter: predict and update
+                        if kf_state is None:
+                            # Initialize Kalman Filter on first good measurement
+                            kf_state = np.array([center[0], center[1], 0.0, 0.0, angle, 0.0])
+                            kf_P = np.eye(6) * 10.0  # Initial uncertainty
+                        else:
+                            # Kalman Prediction Step
+                            # State transition: x' = x + vx*dt, y' = y + vy*dt, θ' = θ + ω*dt
+                            F = np.array([
+                                [1, 0, dt, 0,  0, 0],
+                                [0, 1, 0,  dt, 0, 0],
+                                [0, 0, 1,  0,  0, 0],
+                                [0, 0, 0,  1,  0, 0],
+                                [0, 0, 0,  0,  1, dt],
+                                [0, 0, 0,  0,  0, 1]
+                            ])
+                            kf_state = F @ kf_state
+                            
+                            # Adjust process noise based on visibility
+                            visibility_score = min(1.0, inliers / 20.0)
+                            Q = np.diag([
+                                process_noise_pos / (visibility_score + 0.1),
+                                process_noise_pos / (visibility_score + 0.1),
+                                process_noise_vel / (visibility_score + 0.1),
+                                process_noise_vel / (visibility_score + 0.1),
+                                process_noise_angle / (visibility_score + 0.1),
+                                process_noise_omega / (visibility_score + 0.1)
+                            ])
+                            kf_P = F @ kf_P @ F.T + Q
+                            
+                            # Measurement from homography
+                            z = np.array([center[0], center[1], angle])
+                            predicted_pos = kf_state[:2]
+                            predicted_angle = kf_state[4]
+                            
+                            # Abnormal motion detection
+                            position_deviation = np.linalg.norm(center - predicted_pos)
+                            angle_diff = abs(angle - predicted_angle)
+                            if angle_diff > np.pi:
+                                angle_diff = 2*np.pi - angle_diff
+                            
+                            # Check if measurement is abnormal (likely occlusion/error)
+                            is_abnormal = False
+                            if len(motion_buffer) >= 5:
+                                # Check against recent motion trends
+                                recent_velocities = np.array([v[:2] for v in motion_buffer[-5:]])
+                                vel_mean = np.mean(recent_velocities, axis=0)
+                                vel_std = np.std(recent_velocities, axis=0) + 1e-6
+                                current_vel = center - predicted_pos
+                                deviation = np.abs(current_vel - vel_mean) / vel_std
+                                if np.any(deviation > 2.5) or position_deviation > 15.0:
+                                    is_abnormal = True
+                            
+                            # Kalman Update Step (only if not abnormal)
+                            if not is_abnormal and inliers >= 6:
+                                # Measurement matrix H: we observe x, y, θ
+                                H = np.array([
+                                    [1, 0, 0, 0, 0, 0],
+                                    [0, 1, 0, 0, 0, 0],
+                                    [0, 0, 0, 0, 1, 0]
+                                ])
+                                
+                                # Measurement noise adjusted by visibility
+                                R = np.diag([
+                                    measurement_noise_pos * (1.0 / (visibility_score + 0.1)),
+                                    measurement_noise_pos * (1.0 / (visibility_score + 0.1)),
+                                    measurement_noise_angle
+                                ])
+                                
+                                # Innovation
+                                y = z - H @ kf_state
+                                # Normalize angle difference
+                                if y[2] > np.pi:
+                                    y[2] -= 2*np.pi
+                                elif y[2] < -np.pi:
+                                    y[2] += 2*np.pi
+                                
+                                # Innovation covariance
+                                S = H @ kf_P @ H.T + R
+                                # Kalman gain
+                                K = kf_P @ H.T @ np.linalg.inv(S)
+                                # Update state
+                                kf_state = kf_state + K @ y
+                                # Update covariance
+                                kf_P = (np.eye(6) - K @ H) @ kf_P
+                                
+                                status = f"Tracking ({inliers}/{len(good_matches)} inliers) [KF]"
+                            else:
+                                # Use prediction only (occlusion or abnormal motion)
+                                if is_abnormal:
+                                    status = f"Tracking ({inliers}/{len(good_matches)} inliers) [KF-REJECT]"
+                                else:
+                                    status = f"Tracking ({inliers}/{len(good_matches)} inliers) [KF-PREDICT]"
+                            
+                            # Update motion buffer
+                            motion_buffer.append(kf_state[2:4].copy())
+                            if len(motion_buffer) > motion_buffer_size:
+                                motion_buffer.pop(0)
+                            
+                            # Use Kalman filtered position and angle
+                            center = kf_state[:2]
+                            angle = kf_state[4]
+                            
+                            # Reconstruct corners with Kalman filtered values
+                            R = np.array([
+                                [np.cos(angle), -np.sin(angle)],
+                                [np.sin(angle),  np.cos(angle)]
+                            ])
+                            corners = (box @ R.T) + center
 
                         # Speed limit: prevent sudden jumps from tracking errors
                         if last_corners is not None:
