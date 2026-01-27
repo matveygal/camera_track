@@ -412,9 +412,48 @@ def track_object_in_video(video_path, output_path=None):
                         # Measurement: [x, y, theta]
                         z = np.array([center[0], center[1], angle])
                         
-                        # Abnormal motion suppression: check if measurement deviates too much
-                        pred_center = kf_state_pred[:2]
-                        pred_angle = kf_state_pred[4]
+                        # Dead zone: ignore tiny measurements (they're just noise)
+                        # Check if measurement changed significantly from last position
+                        if last_corners is not None:
+                            last_center = np.mean(last_corners, axis=0)
+                            last_angle = np.arctan2(
+                                last_corners[1][1] - last_corners[0][1],
+                                last_corners[1][0] - last_corners[0][0]
+                            )
+                            
+                            pos_change = np.linalg.norm(z[:2] - last_center)
+                            angle_change = abs(z[2] - last_angle)
+                            if angle_change > np.pi:
+                                angle_change = 2*np.pi - angle_change
+                            
+                            # If change is tiny, skip Kalman update and use prediction
+                            if pos_change < 0.5 and angle_change < 0.008:
+                                # Use prediction only (stationary)
+                                center = kf_state_pred[:2]
+                                angle = kf_state_pred[4]
+                                kf_state = kf_state_pred
+                                kf_P = kf_P_pred
+                                # Set velocity to zero
+                                kf_state[2:4] = 0.0
+                                kf_state[5] = 0.0
+                                status = f"Tracking ({inliers}/{len(good_matches)} inliers) [DEAD ZONE]"
+                                # Skip to reconstruction
+                                R = np.array([
+                                    [np.cos(angle), -np.sin(angle)],
+                                    [np.sin(angle),  np.cos(angle)]
+                                ])\n                                corners = (box @ R.T) + center
+                                # Continue to next part
+                            else:
+                                # Significant movement - do normal Kalman update
+                                do_kalman_update = True
+                        else:
+                            do_kalman_update = True
+                        
+                        if 'do_kalman_update' in locals() and do_kalman_update:
+                        if 'do_kalman_update' in locals() and do_kalman_update:
+                            # Abnormal motion suppression: check if measurement deviates too much
+                            pred_center = kf_state_pred[:2]
+                            pred_angle = kf_state_pred[4]
                         
                         measurement_deviation = np.linalg.norm(z[:2] - pred_center)
                         angle_deviation = abs(z[2] - pred_angle)
@@ -520,14 +559,15 @@ def track_object_in_video(video_path, output_path=None):
                                 else:
                                     status = f"Tracking ({inliers}/{len(good_matches)} inliers) [KF]"
                         
-                        # Reconstruct box with Kalman-filtered center and angle
-                        R = np.array([
-                            [np.cos(angle), -np.sin(angle)],
-                            [np.sin(angle),  np.cos(angle)]
-                        ])
-                        corners = (box @ R.T) + center
+                        # Reconstruct box with Kalman-filtered center and angle (if not already done in dead zone)
+                        if 'corners' not in locals() or corners is None:
+                            R = np.array([
+                                [np.cos(angle), -np.sin(angle)],
+                                [np.sin(angle),  np.cos(angle)]
+                            ])
+                            corners = (box @ R.T) + center
 
-                        # Update velocity for prediction nigger
+                        # Update velocity for prediction
                         if last_corners is not None:
                             new_velocity = corners - last_corners
                             velocity = alpha_velocity * new_velocity + (1 - alpha_velocity) * velocity
