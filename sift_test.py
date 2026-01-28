@@ -266,6 +266,9 @@ def track_object_in_video(video_path, output_path=None):
     smoothed_angle = None
     alpha_smooth = 0.3  # Smoothing factor (lower = more smoothing)
     
+    # Occlusion handling
+    prev_inliers = 100  # Track previous frame's inlier count
+    
     # Reset video to start (only for file-based video)
     if not use_realsense:
         cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
@@ -442,6 +445,23 @@ def track_object_in_video(video_path, output_path=None):
                             kf_state = np.array([center[0], center[1], 0.0, 0.0, angle, 0.0])
                             kf_P = np.eye(6) * 10.0
                         
+                        # Occlusion recovery: if coming from low visibility, reset to anchor
+                        if prev_inliers < 15 and inliers >= 15:
+                            # Just recovered from occlusion - reset Kalman state to anchor
+                            kf_state[:2] = anchor_position.copy()
+                            kf_state[2:4] = 0.0  # Zero velocity
+                            kf_state[4] = anchor_angle
+                            kf_state[5] = 0.0  # Zero angular velocity
+                            smoothed_position = anchor_position.copy()
+                            smoothed_angle = anchor_angle
+                            is_locked = True
+                            allow_locking = True
+                            stability_frames = 0
+                            stable_position = None
+                            status = f"Tracking ({inliers}/{len(good_matches)} inliers) [RECOVERED - LOCKED TO ANCHOR]"
+                        
+                        prev_inliers = inliers
+                        
                         # Kalman Filter Prediction Step
                         # State transition matrix (constant velocity model)
                         F = np.array([
@@ -477,181 +497,193 @@ def track_object_in_video(video_path, output_path=None):
                         if innovation_angle > np.pi:
                             innovation_angle = 2*np.pi - innovation_angle
                         
-                        # Dead zone: skip Kalman update for sub-pixel noise
-                        dead_zone_pos = 1.0  # pixels (increased from 0.5)
-                        dead_zone_angle = 0.015  # radians (increased from 0.008)
-                        
-                        # Tighter threshold for locking
-                        lock_pos = 0.6  # pixels (increased from 0.3)
-                        lock_angle = 0.01  # radians (increased from 0.005)
-                        
-                        # Different thresholds depending on current state (hysteresis)
-                        if is_locked:
-                            # Use looser threshold to stay locked
-                            check_pos = dead_zone_pos
-                            check_angle = dead_zone_angle
+                        # Force lock during low visibility (occlusion)
+                        if inliers < 15:
+                            # Completely lock to anchor during occlusion
+                            kf_state = kf_state_pred.copy()
+                            kf_state[:2] = anchor_position
+                            kf_state[2:4] = 0.0
+                            kf_state[4] = anchor_angle
+                            kf_state[5] = 0.0
+                            kf_P = kf_P_pred
+                            center = anchor_position
+                            angle = anchor_angle
+                            is_locked = True
+                            status = f"Tracking ({inliers}/{len(good_matches)} inliers) [OCCLUSION - LOCKED]"
                         else:
-                            # Use tighter threshold to lock
-                            check_pos = lock_pos
-                            check_angle = lock_angle
-                        
-                        if innovation_pos < check_pos and innovation_angle < check_angle:
-                            # Innovation too small - increment counter
-                            dead_zone_frames += 1
+                            # Dead zone: skip Kalman update for sub-pixel noise
+                            dead_zone_pos = 1.0  # pixels (increased from 0.5)
+                            dead_zone_angle = 0.015  # radians (increased from 0.008)
                             
-                            # Require multiple frames to lock (and only if locking is allowed)
-                            if dead_zone_frames >= lock_threshold and not is_locked and allow_locking:
-                                is_locked = True
+                            # Tighter threshold for locking
+                            lock_pos = 0.6  # pixels (increased from 0.3)
+                            lock_angle = 0.01  # radians (increased from 0.005)
                             
+                            # Different thresholds depending on current state (hysteresis)
                             if is_locked:
-                                # Completely lock to anchor with zero velocity
-                                kf_state = kf_state_pred.copy()
-                                kf_state[:2] = anchor_position
-                                kf_state[2:4] = 0.0
-                                kf_state[4] = anchor_angle
-                                kf_state[5] = 0.0
-                                kf_P = kf_P_pred
-                                center = anchor_position
-                                angle = anchor_angle
-                                status = f"Tracking ({inliers}/{len(good_matches)} inliers) [LOCKED]"
+                                # Use looser threshold to stay locked
+                                check_pos = dead_zone_pos
+                                check_angle = dead_zone_angle
                             else:
-                                # Approaching lock, use prediction with zero velocity
-                                kf_state = kf_state_pred.copy()
-                                kf_state[2:4] = 0.0
-                                kf_state[5] = 0.0
-                                kf_P = kf_P_pred
-                                center = kf_state[:2]
-                                angle = kf_state[4]
-                                status = f"Tracking ({inliers}/{len(good_matches)} inliers) [DEAD ZONE {dead_zone_frames}/{lock_threshold}]"
-                        else:
-                            # Innovation above threshold
-                            if is_locked:
-                                # Unlock immediately on movement
-                                is_locked = False
-                                allow_locking = False  # Prevent re-locking to old anchor
-                                dead_zone_frames = 0
-                                status = f"Tracking ({inliers}/{len(good_matches)} inliers) [MOVEMENT DETECTED]"
+                                # Use tighter threshold to lock
+                                check_pos = lock_pos
+                                check_angle = lock_angle
                             
-                            if not is_locked:
-                                # Real movement detected - reset counter
-                                dead_zone_frames = 0
+                            if innovation_pos < check_pos and innovation_angle < check_angle:
+                                # Innovation too small - increment counter
+                                dead_zone_frames += 1
                                 
-                                # Track stable position for anchor updates
-                                # If position is stable at new location, update anchor
-                                # But only during good visibility (high inliers)
-                                if inliers < 15:  # Low visibility - reset stability tracking
-                                    stability_frames = 0
-                                    stable_position = None
-                                    stable_angle = None
+                                # Require multiple frames to lock (and only if locking is allowed)
+                                if dead_zone_frames >= lock_threshold and not is_locked and allow_locking:
+                                    is_locked = True
                                 
-                                if smoothed_position is not None and inliers >= 15:
-                                    if stable_position is None:
-                                        stable_position = smoothed_position.copy()
-                                        stable_angle = smoothed_angle
-                                        stability_frames = 1
-                                    else:
-                                        # Check if position is stable (within small radius)
-                                        pos_diff = np.linalg.norm(smoothed_position - stable_position)
-                                        angle_diff = abs(smoothed_angle - stable_angle)
-                                        if angle_diff > np.pi:
-                                            angle_diff = 2*np.pi - angle_diff
-                                        
-                                        if pos_diff < 0.5 and angle_diff < 0.01:  # Stable
-                                            stability_frames += 1
-                                            if stability_frames >= stability_threshold:
-                                                # Position has been stable for enough frames, update anchor
-                                                anchor_position = stable_position.copy()
-                                                anchor_angle = stable_angle
-                                                allow_locking = True  # Re-enable locking now that anchor is updated
-                                                print(f"\rAnchor updated to new stable position: ({anchor_position[0]:.1f}, {anchor_position[1]:.1f})   ", end='')
-                                        else:  # Position changed, reset stability tracking
+                                if is_locked:
+                                    # Completely lock to anchor with zero velocity
+                                    kf_state = kf_state_pred.copy()
+                                    kf_state[:2] = anchor_position
+                                    kf_state[2:4] = 0.0
+                                    kf_state[4] = anchor_angle
+                                    kf_state[5] = 0.0
+                                    kf_P = kf_P_pred
+                                    center = anchor_position
+                                    angle = anchor_angle
+                                    status = f"Tracking ({inliers}/{len(good_matches)} inliers) [LOCKED]"
+                                else:
+                                    # Approaching lock, use prediction with zero velocity
+                                    kf_state = kf_state_pred.copy()
+                                    kf_state[2:4] = 0.0
+                                    kf_state[5] = 0.0
+                                    kf_P = kf_P_pred
+                                    center = kf_state[:2]
+                                    angle = kf_state[4]
+                                    status = f"Tracking ({inliers}/{len(good_matches)} inliers) [DEAD ZONE {dead_zone_frames}/{lock_threshold}]"
+                            else:
+                                # Innovation above threshold
+                                if is_locked:
+                                    # Unlock immediately on movement
+                                    is_locked = False
+                                    allow_locking = False  # Prevent re-locking to old anchor
+                                    dead_zone_frames = 0
+                                    status = f"Tracking ({inliers}/{len(good_matches)} inliers) [MOVEMENT DETECTED]"
+                                
+                                if not is_locked:
+                                    # Real movement detected - reset counter
+                                    dead_zone_frames = 0
+                                    
+                                    # Track stable position for anchor updates
+                                    # If position is stable at new location, update anchor
+                                    # But only during good visibility (high inliers)
+                                    if inliers < 15:  # Low visibility - reset stability tracking
+                                        stability_frames = 0
+                                        stable_position = None
+                                        stable_angle = None
+                                    
+                                    if smoothed_position is not None and inliers >= 15:
+                                        if stable_position is None:
                                             stable_position = smoothed_position.copy()
                                             stable_angle = smoothed_angle
                                             stability_frames = 1
+                                        else:
+                                            # Check if position is stable (within small radius)
+                                            pos_diff = np.linalg.norm(smoothed_position - stable_position)
+                                            angle_diff = abs(smoothed_angle - stable_angle)
+                                            if angle_diff > np.pi:
+                                                angle_diff = 2*np.pi - angle_diff
+                                            
+                                            if pos_diff < 0.5 and angle_diff < 0.01:  # Stable
+                                                stability_frames += 1
+                                                if stability_frames >= stability_threshold:
+                                                    # Position has been stable for enough frames, update anchor
+                                                    anchor_position = stable_position.copy()
+                                                    anchor_angle = stable_angle
+                                                    allow_locking = True  # Re-enable locking now that anchor is updated
+                                                    print(f"\rAnchor updated to new stable position: ({anchor_position[0]:.1f}, {anchor_position[1]:.1f})   ", end='')
+                                            else:  # Position changed, reset stability tracking
+                                                stable_position = smoothed_position.copy()
+                                                stable_angle = smoothed_angle
+                                                stability_frames = 1
+                                    
+                                    # Proceed with Kalman update
                                 
-                                # Proceed with Kalman update
-                            
-                            # Abnormal motion suppression: check if measurement deviates too much
-                            # Calculate expected deviation (3σ)
-                            pos_sigma = np.sqrt(kf_P_pred[0,0] + kf_P_pred[1,1])
-                            angle_sigma = np.sqrt(kf_P_pred[4,4])
-                            
-                            is_outlier = (innovation_pos > 3*pos_sigma or 
-                                         innovation_angle > 3*angle_sigma)
-                            is_outlier = (innovation_pos > 3*pos_sigma or 
-                                         innovation_angle > 3*angle_sigma)
-                            
-                            if is_outlier and last_corners is not None:
-                                # Reject outlier measurement, use prediction only
-                                center = pred_center
-                                angle = pred_angle
-                                kf_state = kf_state_pred
-                                kf_P = kf_P_pred
-                                status = f"Tracking ({inliers}/{len(good_matches)} inliers) [OUTLIER REJECTED]"
-                            else:
-                                # Kalman Filter Update Step
-                                # Measurement matrix
-                                H = np.array([
-                                    [1, 0, 0, 0, 0, 0],
-                                    [0, 1, 0, 0, 0, 0],
-                                    [0, 0, 0, 0, 1, 0]
-                                ])
+                                # Abnormal motion suppression: check if measurement deviates too much
+                                # Calculate expected deviation (3σ)
+                                pos_sigma = np.sqrt(kf_P_pred[0,0] + kf_P_pred[1,1])
+                                angle_sigma = np.sqrt(kf_P_pred[4,4])
                                 
-                                # Adaptive measurement noise based on inlier count
-                                # More inliers = more trust in measurement (lower noise)
-                                # Fewer inliers = less trust (higher noise)
-                                inlier_ratio = inliers / max(len(good_matches), 1)
-                                measurement_noise = measurement_noise_base / max(inlier_ratio, 0.1)
+                                is_outlier = (innovation_pos > 3*pos_sigma or 
+                                             innovation_angle > 3*angle_sigma)
                                 
-                                R = np.diag([measurement_noise, measurement_noise, 0.1])
-                                
-                                # Innovation (measurement residual)
-                                y = z - H @ kf_state_pred
-                                
-                                # Normalize angle difference to [-π, π]
-                                if y[2] > np.pi:
-                                    y[2] -= 2*np.pi
-                                elif y[2] < -np.pi:
-                                    y[2] += 2*np.pi
-                                
-                                # Innovation covariance
-                                S = H @ kf_P_pred @ H.T + R
-                                
-                                # Kalman gain
-                                K = kf_P_pred @ H.T @ np.linalg.inv(S)
-                                
-                                # Update state
-                                kf_state = kf_state_pred + K @ y
-                                
-                                # Update covariance
-                                kf_P = (np.eye(6) - K @ H) @ kf_P_pred
-                                
-                                # Use Kalman filtered values
-                                center = kf_state[:2]
-                                angle = kf_state[4]
-                                
-                                # Apply exponential moving average smoothing to reduce jitter
-                                if smoothed_position is None:
-                                    smoothed_position = center.copy()
-                                    smoothed_angle = angle
+                                if is_outlier and last_corners is not None:
+                                    # Reject outlier measurement, use prediction only
+                                    center = pred_center
+                                    angle = pred_angle
+                                    kf_state = kf_state_pred
+                                    kf_P = kf_P_pred
+                                    status = f"Tracking ({inliers}/{len(good_matches)} inliers) [OUTLIER REJECTED]"
                                 else:
-                                    smoothed_position = alpha_smooth * center + (1 - alpha_smooth) * smoothed_position
-                                    # Handle angle wrapping for smoothing
-                                    angle_diff = angle - smoothed_angle
-                                    if angle_diff > np.pi:
-                                        angle_diff -= 2*np.pi
-                                    elif angle_diff < -np.pi:
-                                        angle_diff += 2*np.pi
-                                    smoothed_angle = smoothed_angle + alpha_smooth * angle_diff
-                                
-                                center = smoothed_position
-                                angle = smoothed_angle
-                                
-                                # Normal status
-                                if inliers < 12:
-                                    status = f"Tracking ({inliers}/{len(good_matches)} inliers) [LOW VIS]"
-                                else:
-                                    status = f"Tracking ({inliers}/{len(good_matches)} inliers) [KF]"
+                                    # Kalman Filter Update Step
+                                    # Measurement matrix
+                                    H = np.array([
+                                        [1, 0, 0, 0, 0, 0],
+                                        [0, 1, 0, 0, 0, 0],
+                                        [0, 0, 0, 0, 1, 0]
+                                    ])
+                                    
+                                    # Adaptive measurement noise based on inlier count
+                                    # More inliers = more trust in measurement (lower noise)
+                                    # Fewer inliers = less trust (higher noise)
+                                    inlier_ratio = inliers / max(len(good_matches), 1)
+                                    measurement_noise = measurement_noise_base / max(inlier_ratio, 0.1)
+                                    
+                                    R = np.diag([measurement_noise, measurement_noise, 0.1])
+                                    
+                                    # Innovation (measurement residual)
+                                    y = z - H @ kf_state_pred
+                                    
+                                    # Normalize angle difference to [-π, π]
+                                    if y[2] > np.pi:
+                                        y[2] -= 2*np.pi
+                                    elif y[2] < -np.pi:
+                                        y[2] += 2*np.pi
+                                    
+                                    # Innovation covariance
+                                    S = H @ kf_P_pred @ H.T + R
+                                    
+                                    # Kalman gain
+                                    K = kf_P_pred @ H.T @ np.linalg.inv(S)
+                                    
+                                    # Update state
+                                    kf_state = kf_state_pred + K @ y
+                                    
+                                    # Update covariance
+                                    kf_P = (np.eye(6) - K @ H) @ kf_P_pred
+                                    
+                                    # Use Kalman filtered values
+                                    center = kf_state[:2]
+                                    angle = kf_state[4]
+                                    
+                                    # Apply exponential moving average smoothing to reduce jitter
+                                    if smoothed_position is None:
+                                        smoothed_position = center.copy()
+                                        smoothed_angle = angle
+                                    else:
+                                        smoothed_position = alpha_smooth * center + (1 - alpha_smooth) * smoothed_position
+                                        # Handle angle wrapping for smoothing
+                                        angle_diff = angle - smoothed_angle
+                                        if angle_diff > np.pi:
+                                            angle_diff -= 2*np.pi
+                                        elif angle_diff < -np.pi:
+                                            angle_diff += 2*np.pi
+                                        smoothed_angle = smoothed_angle + alpha_smooth * angle_diff
+                                    
+                                    center = smoothed_position
+                                    angle = smoothed_angle
+                                    
+                                    # Normal status
+                                    if inliers < 12:
+                                        status = f"Tracking ({inliers}/{len(good_matches)} inliers) [LOW VIS]"
+                                    else:
+                                        status = f"Tracking ({inliers}/{len(good_matches)} inliers) [KF]"
                         
                         # Reconstruct box with Kalman-filtered center and angle
                         R = np.array([
