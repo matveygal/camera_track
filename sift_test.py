@@ -260,6 +260,8 @@ def track_object_in_video(video_path, output_path=None):
     stable_angle = None
     stability_frames = 0
     stability_threshold = 10  # Frames needed to update anchor to new stable position
+    stability_threshold_after_movement = 5  # Faster after large movement
+    after_large_movement = False  # Track if we just had large movement
     allow_locking = True  # Prevent locking until anchor updates after movement
     
     # Exponential moving average for smoothing
@@ -561,7 +563,10 @@ def track_object_in_video(video_path, output_path=None):
                                         # Large movement - unlock immediately
                                         is_locked = False
                                         allow_locking = False  # Prevent re-locking to old anchor
+                                        after_large_movement = True  # Use faster stability threshold
                                         dead_zone_frames = 0
+                                        stability_frames = 0  # Reset stability tracking
+                                        stable_position = None
                                         status = f"Tracking ({inliers}/{len(good_matches)} inliers) [LARGE MOVEMENT - UNLOCKED]"
                                     else:
                                         # Small movement - require sustained detection
@@ -611,11 +616,14 @@ def track_object_in_video(video_path, output_path=None):
                                             
                                             if pos_diff < 0.5 and angle_diff < 0.01:  # Stable
                                                 stability_frames += 1
-                                                if stability_frames >= stability_threshold:
-                                                    # Position has been stable for enough frames, update anchor
-                                                    anchor_position = stable_position.copy()
-                                                    anchor_angle = stable_angle
-                                                    allow_locking = True  # Re-enable locking now that anchor is updated
+                                            # Use faster threshold after large movement
+                                            current_threshold = stability_threshold_after_movement if after_large_movement else stability_threshold
+                                            if stability_frames >= current_threshold:
+                                                # Position has been stable for enough frames, update anchor
+                                                anchor_position = stable_position.copy()
+                                                anchor_angle = stable_angle
+                                                allow_locking = True  # Re-enable locking now that anchor is updated
+                                                after_large_movement = False  # Reset flag
                                                     print(f"\rAnchor updated to new stable position: ({anchor_position[0]:.1f}, {anchor_position[1]:.1f})   ", end='')
                                             else:  # Position changed, reset stability tracking
                                                 stable_position = smoothed_position.copy()
