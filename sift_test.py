@@ -252,7 +252,7 @@ def track_object_in_video(video_path, output_path=None):
     first_detection_set = False  # Track if we've set the initial anchor
     is_locked = False  # Track lock state for hysteresis
     lock_threshold = 3  # Frames needed to lock (reduced from 5)
-    unlock_threshold = 3  # Frames needed to unlock
+    unlock_threshold = 5  # Frames needed to unlock - sustained movement required
     
     # Track stable position for anchor updates
     stable_position = None
@@ -512,12 +512,12 @@ def track_object_in_video(video_path, output_path=None):
                             status = f"Tracking ({inliers}/{len(good_matches)} inliers) [OCCLUSION - LOCKED]"
                         else:
                             # Dead zone: skip Kalman update for sub-pixel noise
-                            dead_zone_pos = 0.4  # pixels - very tight to catch systematic bias
-                            dead_zone_angle = 0.008  # radians
+                            dead_zone_pos = 1.5  # pixels - tolerate natural matching bias
+                            dead_zone_angle = 0.02  # radians
                             
                             # Tighter threshold for locking
-                            lock_pos = 0.3  # pixels - aggressive locking
-                            lock_angle = 0.005  # radians
+                            lock_pos = 1.0  # pixels
+                            lock_angle = 0.015  # radians
                             
                             # Different thresholds depending on current state (hysteresis)
                             if is_locked:
@@ -555,15 +555,30 @@ def track_object_in_video(video_path, output_path=None):
                             else:
                                 # Innovation above threshold
                                 if is_locked:
-                                    # Unlock immediately on movement
-                                    is_locked = False
-                                    allow_locking = False  # Prevent re-locking to old anchor
-                                    dead_zone_frames = 0
-                                    status = f"Tracking ({inliers}/{len(good_matches)} inliers) [MOVEMENT DETECTED]"
+                                    # Require sustained movement before unlocking
+                                    dead_zone_frames -= 1
+                                    if dead_zone_frames <= -unlock_threshold:  # Negative = consecutive movement frames
+                                        # Sustained movement detected, unlock
+                                        is_locked = False
+                                        allow_locking = False  # Prevent re-locking to old anchor
+                                        dead_zone_frames = 0
+                                        status = f"Tracking ({inliers}/{len(good_matches)} inliers) [MOVEMENT DETECTED]"
+                                    else:
+                                        # Still locked, ignore transient movement
+                                        kf_state = kf_state_pred.copy()
+                                        kf_state[:2] = anchor_position
+                                        kf_state[2:4] = 0.0
+                                        kf_state[4] = anchor_angle
+                                        kf_state[5] = 0.0
+                                        kf_P = kf_P_pred
+                                        center = anchor_position
+                                        angle = anchor_angle
+                                        status = f"Tracking ({inliers}/{len(good_matches)} inliers) [LOCKED - MOTION {-dead_zone_frames}/{unlock_threshold}]"
                                 
                                 if not is_locked:
-                                    # Real movement detected - reset counter
-                                    dead_zone_frames = 0
+                                    # Real movement detected - reset counter to zero
+                                    if dead_zone_frames > 0:
+                                        dead_zone_frames = 0
                                     
                                     # Track stable position for anchor updates
                                     # If position is stable at new location, update anchor
