@@ -252,7 +252,8 @@ def track_object_in_video(video_path, output_path=None):
     first_detection_set = False  # Track if we've set the initial anchor
     is_locked = False  # Track lock state for hysteresis
     lock_threshold = 3  # Frames needed to lock (reduced from 5)
-    unlock_threshold = 5  # Frames needed to unlock - sustained movement required
+    unlock_threshold = 3  # Frames needed to unlock for small movements
+    large_movement_threshold = 8.0  # pixels - immediate unlock for large movements
     
     # Track stable position for anchor updates
     stable_position = None
@@ -555,25 +556,33 @@ def track_object_in_video(video_path, output_path=None):
                             else:
                                 # Innovation above threshold
                                 if is_locked:
-                                    # Require sustained movement before unlocking
-                                    dead_zone_frames -= 1
-                                    if dead_zone_frames <= -unlock_threshold:  # Negative = consecutive movement frames
-                                        # Sustained movement detected, unlock
+                                    # Check for large movement (immediate unlock)
+                                    if innovation_pos > large_movement_threshold or innovation_angle > 0.1:  # 8px or ~6 degrees
+                                        # Large movement - unlock immediately
                                         is_locked = False
                                         allow_locking = False  # Prevent re-locking to old anchor
                                         dead_zone_frames = 0
-                                        status = f"Tracking ({inliers}/{len(good_matches)} inliers) [MOVEMENT DETECTED]"
+                                        status = f"Tracking ({inliers}/{len(good_matches)} inliers) [LARGE MOVEMENT - UNLOCKED]"
                                     else:
-                                        # Still locked, ignore transient movement
-                                        kf_state = kf_state_pred.copy()
-                                        kf_state[:2] = anchor_position
-                                        kf_state[2:4] = 0.0
-                                        kf_state[4] = anchor_angle
-                                        kf_state[5] = 0.0
-                                        kf_P = kf_P_pred
-                                        center = anchor_position
-                                        angle = anchor_angle
-                                        status = f"Tracking ({inliers}/{len(good_matches)} inliers) [LOCKED - MOTION {-dead_zone_frames}/{unlock_threshold}]"
+                                        # Small movement - require sustained detection
+                                        dead_zone_frames -= 1
+                                        if dead_zone_frames <= -unlock_threshold:  # Negative = consecutive movement frames
+                                            # Sustained movement detected, unlock
+                                            is_locked = False
+                                            allow_locking = False  # Prevent re-locking to old anchor
+                                            dead_zone_frames = 0
+                                            status = f"Tracking ({inliers}/{len(good_matches)} inliers) [MOVEMENT DETECTED]"
+                                        else:
+                                            # Still locked, ignore transient movement
+                                            kf_state = kf_state_pred.copy()
+                                            kf_state[:2] = anchor_position
+                                            kf_state[2:4] = 0.0
+                                            kf_state[4] = anchor_angle
+                                            kf_state[5] = 0.0
+                                            kf_P = kf_P_pred
+                                            center = anchor_position
+                                            angle = anchor_angle
+                                            status = f"Tracking ({inliers}/{len(good_matches)} inliers) [LOCKED - MOTION {-dead_zone_frames}/{unlock_threshold}]"
                                 
                                 if not is_locked:
                                     # Real movement detected - reset counter to zero
