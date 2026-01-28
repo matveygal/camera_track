@@ -305,7 +305,16 @@ def track_object_in_video(video_path, output_path=None):
                 if len(match_pair) == 2:
                     m, n = match_pair
                     if m.distance < ratio_threshold * n.distance:
-                        good_matches.append(m)
+                        # Spatial filtering: if we have a prediction, only accept matches near it
+                        if kf_state is not None:
+                            match_pt = kp[m.trainIdx].pt
+                            pred_center = kf_state[:2]
+                            dist_to_pred = np.linalg.norm(np.array(match_pt) - pred_center)
+                            # Reject matches more than 150px from predicted center
+                            if dist_to_pred < 150:
+                                good_matches.append(m)
+                        else:
+                            good_matches.append(m)
             
             # Need at least 6 matches for more robust homography
             if len(good_matches) >= 6:
@@ -320,8 +329,35 @@ def track_object_in_video(video_path, output_path=None):
                                              confidence=0.995)
                 
                 if H is not None:
+                    # Homography sanity check: reject extreme transformations
+                    if last_corners is not None and kf_state is not None:
+                        # Test transform on reference corners
+                        test_corners = cv2.perspectiveTransform(ref_corners.reshape(-1, 1, 2), H).reshape(-1, 2)
+                        test_center = np.mean(test_corners, axis=0)
+                        pred_center = kf_state[:2]
+                        
+                        # Check translation jump
+                        translation_jump = np.linalg.norm(test_center - pred_center)
+                        
+                        # Check rotation jump
+                        dx = test_corners[1][0] - test_corners[0][0]
+                        dy = test_corners[1][1] - test_corners[0][1]
+                        test_angle = np.arctan2(dy, dx)
+                        pred_angle = kf_state[4]
+                        angle_jump = abs(test_angle - pred_angle)
+                        if angle_jump > np.pi:
+                            angle_jump = 2*np.pi - angle_jump
+                        
+                        # Reject homography if jump is too large
+                        if translation_jump > 100 or angle_jump > np.pi/4:  # 100px or 45° is suspicious
+                            H = None
+                            status = f"Rejected homography: jump too large ({translation_jump:.1f}px, {np.degrees(angle_jump):.1f}°)"
+                    
                     # Count inliers
-                    inliers = np.sum(mask)
+                    if H is not None:
+                        inliers = np.sum(mask)
+                    else:
+                        inliers = 0
                     
                     # Store inlier matches for bundle adjustment
                     inlier_indices = mask.ravel() == 1
@@ -502,7 +538,13 @@ def track_object_in_video(video_path, output_path=None):
                                 
                                 # Track stable position for anchor updates
                                 # If position is stable at new location, update anchor
-                                if smoothed_position is not None:
+                                # But only during good visibility (high inliers)
+                                if inliers < 15:  # Low visibility - reset stability tracking
+                                    stability_frames = 0
+                                    stable_position = None
+                                    stable_angle = None
+                                
+                                if smoothed_position is not None and inliers >= 15:
                                     if stable_position is None:
                                         stable_position = smoothed_position.copy()
                                         stable_angle = smoothed_angle
