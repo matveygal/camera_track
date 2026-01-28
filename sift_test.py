@@ -251,7 +251,7 @@ def track_object_in_video(video_path, output_path=None):
     dead_zone_frames = 0
     first_detection_set = False  # Track if we've set the initial anchor
     is_locked = False  # Track lock state for hysteresis
-    lock_threshold = 5  # Frames needed to lock
+    lock_threshold = 3  # Frames needed to lock (reduced from 5)
     unlock_threshold = 3  # Frames needed to unlock
     
     # Track stable position for anchor updates
@@ -512,12 +512,12 @@ def track_object_in_video(video_path, output_path=None):
                             status = f"Tracking ({inliers}/{len(good_matches)} inliers) [OCCLUSION - LOCKED]"
                         else:
                             # Dead zone: skip Kalman update for sub-pixel noise
-                            dead_zone_pos = 1.0  # pixels (increased from 0.5)
-                            dead_zone_angle = 0.015  # radians (increased from 0.008)
+                            dead_zone_pos = 0.4  # pixels - very tight to catch systematic bias
+                            dead_zone_angle = 0.008  # radians
                             
                             # Tighter threshold for locking
-                            lock_pos = 0.6  # pixels (increased from 0.3)
-                            lock_angle = 0.01  # radians (increased from 0.005)
+                            lock_pos = 0.3  # pixels - aggressive locking
+                            lock_angle = 0.005  # radians
                             
                             # Different thresholds depending on current state (hysteresis)
                             if is_locked:
@@ -537,25 +537,20 @@ def track_object_in_video(video_path, output_path=None):
                                 if dead_zone_frames >= lock_threshold and not is_locked and allow_locking:
                                     is_locked = True
                                 
+                                # ALWAYS lock to anchor when in dead zone (prevent bias accumulation)
+                                # Don't do Kalman updates with biased measurements
+                                kf_state = kf_state_pred.copy()
+                                kf_state[:2] = anchor_position
+                                kf_state[2:4] = 0.0
+                                kf_state[4] = anchor_angle
+                                kf_state[5] = 0.0
+                                kf_P = kf_P_pred
+                                center = anchor_position
+                                angle = anchor_angle
+                                
                                 if is_locked:
-                                    # Completely lock to anchor with zero velocity
-                                    kf_state = kf_state_pred.copy()
-                                    kf_state[:2] = anchor_position
-                                    kf_state[2:4] = 0.0
-                                    kf_state[4] = anchor_angle
-                                    kf_state[5] = 0.0
-                                    kf_P = kf_P_pred
-                                    center = anchor_position
-                                    angle = anchor_angle
                                     status = f"Tracking ({inliers}/{len(good_matches)} inliers) [LOCKED]"
                                 else:
-                                    # Approaching lock, use prediction with zero velocity
-                                    kf_state = kf_state_pred.copy()
-                                    kf_state[2:4] = 0.0
-                                    kf_state[5] = 0.0
-                                    kf_P = kf_P_pred
-                                    center = kf_state[:2]
-                                    angle = kf_state[4]
                                     status = f"Tracking ({inliers}/{len(good_matches)} inliers) [DEAD ZONE {dead_zone_frames}/{lock_threshold}]"
                             else:
                                 # Innovation above threshold
